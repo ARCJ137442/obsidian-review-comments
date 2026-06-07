@@ -1,9 +1,9 @@
 {
   "id": "review-comments",
-  "name": "Review Comments",
+  "name": "评阅批注",
   "version": "1.0.0",
   "minAppVersion": "1.7.2",
-  "description": "Notion-style review comments stored as CriticMarkup. AI-friendly format for LLM-assisted editing.",
+  "description": "Markdown 原生 Obsidian 文本批注，直接保存在源文件中，便于人类和 Agent 读取处理。",
   "author": "Shota Shirai",
   "authorUrl": "https://github.com/ShotaShirai1719",
   "isDesktopOnly": false

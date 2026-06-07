@@ -2,16 +2,20 @@
 
 > 日本語版 README: [README.ja.md](./README.ja.md)
 
-Notion-style review comments for Obsidian. Select text, click the floating button, and add a comment. Comments are stored directly in `.md` files as **CriticMarkup**, so Claude / GPT can read the file and apply the requested edits without any export step.
+Notion-style review comments for Obsidian. Select text, click the floating button, and add a comment. Comments are stored directly in `.md` files, so Claude / GPT can read the file and apply the requested edits without any export step.
 
 ## Comment format
 
 ```markdown
-The original {==text==}{>>shirai|2026-05-13: please rewrite<<} has an issue.
+The original {<<text>>}{>>shirai|2026-05-13|EDIT|id=RC-20260513-120000-ABCD|status=open: please rewrite<<} has an issue.
 ```
 
-- `{==...==}` — highlighted span (rendered in yellow)
-- `{>>author|date: comment<<}` — comment metadata
+- `{<<...>>}` — anchored source text. This fork writes this format by default because it does not collide with Obsidian / CriticMarkup highlight syntax.
+- `{>>author|date|TYPE|id=RC-...|status=open: comment<<}` — comment metadata. Known `TYPE` values are `ASK`, `EDIT`, `PRAISE`, and `NOTE`; custom types are parsed and preserved.
+- `status` is currently `open` or `closed`. Closing a comment preserves the source evidence instead of deleting it.
+- Replies are stored as ordinary comments with `replyTo=RC-...`.
+- Legacy `{==...==}{>>...<<}` and transitional `{=#...#=}{>>...<<}` comments are still parsed for backward compatibility.
+- Anchors and comment bodies may span multiple lines. The sidebar renders basic Markdown for both the anchored text and the comment body.
 
 ## Build
 
@@ -48,7 +52,7 @@ Then in Obsidian:
 
 1. Drag-select a span of text
 2. Click the **💬 Comment** button that appears near the selection
-3. Enter your comment in the modal. Multiline notes and bullet lists are supported.
+3. Enter your comment in the modal. Multiline notes, bullet lists, links, inline code, and other basic Markdown are supported in the sidebar.
 
 Alternatively:
 
@@ -60,13 +64,17 @@ Alternatively:
 Open the comments panel from the left ribbon (speech-bubble icon) or via `Review Comments: Open comments panel`.
 
 - Click a card or `Jump` → jump to the corresponding location in the document
-- `Resolve` button → replace `{==text==}{>>...<<}` with `text` (deletes the comment, keeps the original text)
+- The anchored text and comment body are rendered as basic Markdown.
+- `Add comment` / `追加批注` → append a reply-like comment after the selected card, with `replyTo` pointing to the original comment id.
+- `Close comment` / `关闭批注` → set `status=closed` for the comment thread while preserving the Markdown comment.
+- Closed comments are folded by default. Use `展开` to inspect them and `重新打开` to restore the thread to `status=open`.
+- `Delete` / `删除` is a separate destructive action. The first click arms the button as `确认删除`; the second click removes the selected comment markup and restores its anchor text.
 
 ## AI integration
 
 Pass the `.md` file directly to Claude Code or another LLM with a prompt like:
 
-> Apply the edits described in the CriticMarkup comments (`{==...==}{>>...<<}`) in this file. Remove the CriticMarkup once each comment has been applied, and restore the highlighted spans to plain text.
+> Apply the edits described in the review comments (`{<<...>>}{>>...<<}`) in this file. Remove the review markup once each comment has been applied, and restore the anchored spans to plain text.
 
 This closes the loop: comment in Obsidian → hand off to an LLM → get a clean diff back.
 
@@ -75,6 +83,7 @@ This closes the loop: comment in Obsidian → hand off to an LLM → get a clean
 ```bash
 npm run dev   # watch mode
 npm run build # production build
+npm test      # parser and source-editing regression tests
 ```
 
 ## License
