@@ -25,17 +25,22 @@ import {
   ParsedMeta,
   appendReplyComment,
   containsCommentMarkup,
+  filterComments,
   findComments,
   formatComment,
   generateCommentId,
   removeComment,
+  replaceCommentMeta,
   replaceCommentThreadStatus,
+  summarizeComments,
+  CommentStatusFilter,
 } from "./comment-core";
 
 interface ReviewCommentsSettings {
   authorName: string;
   dateFormat: "iso" | "japanese";
   autoOpenPanel: boolean;
+  showFloatingBar: boolean;
   foldEditorMarkup: boolean;
   highlightAnchors: boolean;
 }
@@ -44,6 +49,7 @@ const DEFAULT_SETTINGS: ReviewCommentsSettings = {
   authorName: "you",
   dateFormat: "iso",
   autoOpenPanel: true,
+  showFloatingBar: true,
   foldEditorMarkup: true,
   highlightAnchors: false,
 };
@@ -72,19 +78,22 @@ class CommentInputModal extends Modal {
   private readonly onSubmit: (body: string) => void;
   private readonly titleText: string;
   private readonly submitText: string;
+  private readonly initialBody: string;
 
   constructor(
     app: App,
     typeTag: string,
     onSubmit: (body: string) => void,
     titleText?: string,
-    submitText?: string
+    submitText?: string,
+    initialBody?: string
   ) {
     super(app);
     this.typeTag = typeTag;
     this.onSubmit = onSubmit;
     this.titleText = titleText || `添加${TYPE_LABEL[this.typeTag] || "备注"}批注`;
     this.submitText = submitText || "添加批注";
+    this.initialBody = initialBody || "";
   }
 
   onOpen() {
@@ -102,6 +111,7 @@ class CommentInputModal extends Modal {
       cls: "review-comment-modal-textarea",
     });
     textarea.placeholder = "例：\n这里需要重新判断\n- 理由\n- 相关上下文";
+    textarea.value = this.initialBody;
 
     const actions = contentEl.createDiv({
       cls: "review-comment-modal-actions",
@@ -161,6 +171,27 @@ export default class ReviewCommentsPlugin extends Plugin {
       name: "显示批注工作台",
       callback: () => this.activateView(),
     });
+    this.registerEvent(
+      this.app.workspace.on("editor-menu", (menu, editor) => {
+        if (!editor.getSelection()) return;
+        menu.addSeparator();
+        menu.addItem((item) =>
+          item
+            .setTitle("添加批注")
+            .setIcon("message-circle")
+            .setSection("review-comments")
+            .setIsLabel(true)
+        );
+        for (const t of TYPES) {
+          menu.addItem((item) =>
+            item
+              .setTitle(`${t.icon} ${t.label}`)
+              .setSection("review-comments")
+              .onClick(() => this.addCommentToSelection(editor, t.tag))
+          );
+        }
+      })
+    );
 
     this.addRibbonIcon("message-circle", "打开右侧批注面板", () => {
       this.activateView();
@@ -307,6 +338,10 @@ export default class ReviewCommentsPlugin extends Plugin {
 
   updateFloatingBar() {
     if (!this.floatingBar) return;
+    if (!this.settings.showFloatingBar) {
+      this.hideFloatingBar();
+      return;
+    }
 
     const mdView = this.app.workspace.getActiveViewOfType(MarkdownView);
     if (!mdView) {
@@ -508,6 +543,8 @@ function createCommentDecorationExtension(
 class CommentsView extends ItemView {
   plugin: ReviewCommentsPlugin;
   lastMarkdownView: MarkdownView | null = null;
+  statusFilter: CommentStatusFilter = "all";
+  typeFilter = "all";
 
   constructor(leaf: WorkspaceLeaf, plugin: ReviewCommentsPlugin) {
     super(leaf);
@@ -614,107 +651,281 @@ class CommentsView extends ItemView {
       return;
     }
 
-    for (const match of matches) {
-      const card = container.createDiv({ cls: "review-comment-card" });
-      card.dataset.type = match.meta.type;
-      card.dataset.status = match.meta.status;
-      if (match.meta.status === "closed") {
-        card.classList.add("is-folded");
-      }
+    const summary = summarizeComments(matches);
+    const availableTypes = Object.keys(summary.byType).sort((a, b) =>
+      a.localeCompare(b)
+    );
+    if (
+      this.typeFilter !== "all" &&
+      !availableTypes.includes(this.typeFilter)
+    ) {
+      this.typeFilter = "all";
+    }
 
-      const header = card.createDiv({ cls: "review-comment-card-header" });
-      const icon = header.createSpan({ cls: "review-comment-card-icon" });
-      icon.textContent = TYPE_ICON[match.meta.type] || "💬";
-      const meta = header.createSpan({ cls: "review-comment-card-meta" });
-      meta.textContent = `${match.meta.author} · ${match.meta.date} · ${match.meta.type} · ${match.meta.status}`;
-      if (match.meta.id) {
-        meta.textContent += ` · ${match.meta.id}`;
-      }
-      if (match.meta.replyTo) {
-        meta.textContent += ` · 回复 ${match.meta.replyTo}`;
-      }
+    this.renderFilterBar(container, summary, availableTypes);
 
-      const content = card.createDiv({ cls: "review-comment-card-content" });
+    const visibleMatches = filterComments(matches, {
+      status: this.statusFilter,
+      type: this.typeFilter,
+    });
+
+    if (visibleMatches.length === 0) {
+      container.createEl("p", {
+        text: "当前筛选下没有批注。",
+        cls: "review-comment-empty",
+      });
+      return;
+    }
+
+    const { roots, childrenByParent } = this.buildVisibleThreads(visibleMatches);
+    const rendered = new Set<ParsedComment>();
+    for (const match of roots) {
+      await this.renderCommentCard(
+        container,
+        match,
+        mdView,
+        sourcePath,
+        childrenByParent,
+        rendered
+      );
+    }
+    for (const match of visibleMatches) {
+      if (rendered.has(match)) continue;
+      await this.renderCommentCard(
+        container,
+        match,
+        mdView,
+        sourcePath,
+        childrenByParent,
+        rendered
+      );
+    }
+  }
+
+  buildVisibleThreads(comments: ParsedComment[]): {
+    roots: ParsedComment[];
+    childrenByParent: Map<string, ParsedComment[]>;
+  } {
+    const visibleIds = new Set(
+      comments
+        .map((comment) => comment.meta.id)
+        .filter((id): id is string => Boolean(id))
+    );
+    const childComments = new Set<ParsedComment>();
+    const childrenByParent = new Map<string, ParsedComment[]>();
+
+    for (const comment of comments) {
+      const parentId = comment.meta.replyTo;
+      if (!parentId || !visibleIds.has(parentId)) continue;
+      const children = childrenByParent.get(parentId) ?? [];
+      children.push(comment);
+      childrenByParent.set(parentId, children);
+      childComments.add(comment);
+    }
+
+    return {
+      roots: comments.filter((comment) => !childComments.has(comment)),
+      childrenByParent,
+    };
+  }
+
+  async renderCommentCard(
+    parent: HTMLElement,
+    match: ParsedComment,
+    mdView: MarkdownView,
+    sourcePath: string,
+    childrenByParent: Map<string, ParsedComment[]>,
+    rendered: Set<ParsedComment>
+  ) {
+    if (rendered.has(match)) return;
+    rendered.add(match);
+
+    const card = parent.createDiv({ cls: "review-comment-card" });
+    if (match.meta.replyTo) card.classList.add("is-reply");
+    card.dataset.type = match.meta.type;
+    card.dataset.status = match.meta.status;
+    if (match.meta.status === "closed") {
+      card.classList.add("is-folded");
+    }
+
+    const header = card.createDiv({ cls: "review-comment-card-header" });
+    const icon = header.createSpan({ cls: "review-comment-card-icon" });
+    icon.textContent = TYPE_ICON[match.meta.type] || "💬";
+    const meta = header.createSpan({ cls: "review-comment-card-meta" });
+    meta.textContent = `${match.meta.author} · ${match.meta.date} · ${match.meta.type} · ${match.meta.status}`;
+    if (match.meta.id) {
+      meta.textContent += ` · ${match.meta.id}`;
+    }
+    if (match.meta.replyTo) {
+      meta.textContent += ` · 回复 ${match.meta.replyTo}`;
+    }
+
+    const content = card.createDiv({ cls: "review-comment-card-content" });
+    if (match.anchor) {
       const original = content.createDiv({ cls: "review-comment-card-original" });
       await this.renderMarkdownBlock(original, match.anchor, sourcePath);
-
-      const body = content.createDiv({ cls: "review-comment-card-body" });
-      await this.renderMarkdownBlock(body, match.meta.body, sourcePath);
-
-      const actions = card.createDiv({ cls: "review-comment-card-actions" });
-
-      if (match.meta.status === "closed") {
-        const expandBtn = actions.createEl("button", {
-          text: "展开",
-          cls: "review-comment-action-btn",
-        });
-        expandBtn.addEventListener("click", (e) => {
-          e.stopPropagation();
-          const expanded = card.classList.toggle("is-expanded");
-          card.classList.toggle("is-folded", !expanded);
-          expandBtn.textContent = expanded ? "收起" : "展开";
-        });
-      }
-
-      const jumpBtn = actions.createEl("button", {
-        text: "定位",
-        cls: "review-comment-action-btn",
-      });
-      jumpBtn.addEventListener("click", (e) => {
+      original.setAttribute("title", "单击定位到原文");
+      original.addEventListener("click", (e) => {
         e.stopPropagation();
-        this.jumpTo(mdView, match.offset, match.full.length);
-      });
-
-      const replyBtn = actions.createEl("button", {
-        text: "追加批注",
-        cls: "review-comment-action-btn",
-      });
-      replyBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        this.openReplyModal(mdView, match);
-      });
-
-      const closeBtn = actions.createEl("button", {
-        text: match.meta.status === "closed" ? "重新打开" : "关闭批注",
-        cls: "review-comment-action-btn review-comment-close-btn",
-      });
-      closeBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        this.setCommentStatus(
-          mdView,
-          match,
-          match.meta.status === "closed" ? "open" : "closed"
-        );
-      });
-
-      const deleteBtn = actions.createEl("button", {
-        text: "删除",
-        cls: "review-comment-action-btn review-comment-delete-btn",
-      });
-      let deleteArmed = false;
-      let resetTimer: number | null = null;
-      deleteBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        if (!deleteArmed) {
-          deleteArmed = true;
-          deleteBtn.textContent = "确认删除";
-          deleteBtn.classList.add("is-confirming");
-          if (resetTimer !== null) window.clearTimeout(resetTimer);
-          resetTimer = window.setTimeout(() => {
-            deleteArmed = false;
-            deleteBtn.textContent = "删除";
-            deleteBtn.classList.remove("is-confirming");
-            resetTimer = null;
-          }, 5000);
-          return;
-        }
-        this.deleteComment(mdView, match);
-      });
-
-      card.addEventListener("click", () => {
         this.jumpTo(mdView, match.offset, match.full.length);
       });
     }
+
+    const body = content.createDiv({ cls: "review-comment-card-body" });
+    await this.renderMarkdownBlock(body, match.meta.body, sourcePath);
+    body.setAttribute("title", "双击编辑");
+    body.addEventListener("click", (e) => e.stopPropagation());
+    body.addEventListener("dblclick", (e) => {
+      e.stopPropagation();
+      this.openEditModal(mdView, match);
+    });
+
+    if (match.meta.id) {
+      const replies = childrenByParent.get(match.meta.id) ?? [];
+      if (replies.length > 0) {
+        const repliesEl = content.createDiv({ cls: "review-comment-replies" });
+        for (const reply of replies) {
+          await this.renderCommentCard(
+            repliesEl,
+            reply,
+            mdView,
+            sourcePath,
+            childrenByParent,
+            rendered
+          );
+        }
+      }
+    }
+
+    const actions = card.createDiv({ cls: "review-comment-card-actions" });
+
+    if (match.meta.status === "closed") {
+      const expandBtn = actions.createEl("button", {
+        text: "展开",
+        cls: "review-comment-action-btn",
+      });
+      expandBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const expanded = card.classList.toggle("is-expanded");
+        card.classList.toggle("is-folded", !expanded);
+        expandBtn.textContent = expanded ? "收起" : "展开";
+      });
+    }
+
+      const replyBtn = actions.createEl("button", {
+        text: "回复",
+        cls: "review-comment-action-btn",
+      });
+      if (!match.meta.id) {
+        replyBtn.disabled = true;
+        replyBtn.title = "旧批注缺少 id，无法建立稳定回复关系";
+      }
+      replyBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (!match.meta.id) return;
+        this.openReplyModal(mdView, match);
+      });
+
+    const closeBtn = actions.createEl("button", {
+      text: match.meta.status === "closed" ? "打开" : "关闭",
+      cls: "review-comment-action-btn review-comment-close-btn",
+    });
+    closeBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.setCommentStatus(
+        mdView,
+        match,
+        match.meta.status === "closed" ? "open" : "closed"
+      );
+    });
+
+    const deleteBtn = actions.createEl("button", {
+      text: "删除",
+      cls: "review-comment-action-btn review-comment-delete-btn",
+    });
+    let deleteArmed = false;
+    let resetTimer: number | null = null;
+    deleteBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (!deleteArmed) {
+        deleteArmed = true;
+        deleteBtn.textContent = "确认删除";
+        deleteBtn.classList.add("is-confirming");
+        if (resetTimer !== null) window.clearTimeout(resetTimer);
+        resetTimer = window.setTimeout(() => {
+          deleteArmed = false;
+          deleteBtn.textContent = "删除";
+          deleteBtn.classList.remove("is-confirming");
+          resetTimer = null;
+        }, 5000);
+        return;
+      }
+      this.deleteComment(mdView, match);
+    });
+  }
+
+  renderFilterBar(
+    container: HTMLElement,
+    summary: ReturnType<typeof summarizeComments>,
+    availableTypes: string[]
+  ) {
+    const filterEl = container.createDiv({ cls: "review-comment-filterbar" });
+
+    const counts = filterEl.createDiv({ cls: "review-comment-counts" });
+    counts.createSpan({
+      text: `全部 ${summary.total}`,
+      cls: "review-comment-count-pill",
+    });
+    counts.createSpan({
+      text: `open ${summary.open}`,
+      cls: "review-comment-count-pill",
+    });
+    counts.createSpan({
+      text: `closed ${summary.closed}`,
+      cls: "review-comment-count-pill",
+    });
+
+    const controls = filterEl.createDiv({ cls: "review-comment-filter-controls" });
+
+    const statusSelect = controls.createEl("select", {
+      cls: "review-comment-filter-select",
+    });
+    const statusOptions: { value: CommentStatusFilter; label: string }[] = [
+      { value: "all", label: "全部状态" },
+      { value: "open", label: "open" },
+      { value: "closed", label: "closed" },
+    ];
+    for (const option of statusOptions) {
+      statusSelect.createEl("option", {
+        value: option.value,
+        text: option.label,
+      });
+    }
+    statusSelect.value = this.statusFilter;
+    statusSelect.addEventListener("change", () => {
+      this.statusFilter = statusSelect.value as CommentStatusFilter;
+      void this.renderComments();
+    });
+
+    const typeSelect = controls.createEl("select", {
+      cls: "review-comment-filter-select",
+    });
+    typeSelect.createEl("option", {
+      value: "all",
+      text: "全部类型",
+    });
+    for (const type of availableTypes) {
+      const label = TYPE_LABEL[type] ? `${TYPE_LABEL[type]} · ${type}` : type;
+      typeSelect.createEl("option", {
+        value: type,
+        text: `${label} (${summary.byType[type]})`,
+      });
+    }
+    typeSelect.value = this.typeFilter;
+    typeSelect.addEventListener("change", () => {
+      this.typeFilter = typeSelect.value;
+      void this.renderComments();
+    });
   }
 
   setCommentStatus(
@@ -743,6 +954,31 @@ class CommentsView extends ItemView {
     }
   }
 
+  openEditModal(mdView: MarkdownView, match: ParsedComment) {
+    new CommentInputModal(
+      this.plugin.app,
+      match.meta.type,
+      (body) => {
+        const editor = mdView.editor;
+        const value = editor.getValue();
+        try {
+          editor.setValue(
+            replaceCommentMeta(value, match, {
+              ...match.meta,
+              body: this.plugin.escapeCommentBody(body.trim()),
+            })
+          );
+          void this.renderComments();
+        } catch (error) {
+          new Notice(error instanceof Error ? error.message : "编辑批注失败");
+        }
+      },
+      `编辑批注${match.meta.id ? ` · ${match.meta.id}` : ""}`,
+      "保存修改",
+      match.meta.body
+    ).open();
+  }
+
   openReplyModal(mdView: MarkdownView, match: ParsedComment) {
     new CommentInputModal(
       this.plugin.app,
@@ -756,7 +992,7 @@ class CommentsView extends ItemView {
           author,
           date,
           type: "NOTE",
-          body: this.plugin.escapeCommentBody(body.trim() || "追加批注"),
+          body: this.plugin.escapeCommentBody(body.trim() || "回复"),
           id: generateCommentId(),
           status: "open",
           replyTo: match.meta.id,
@@ -767,11 +1003,11 @@ class CommentsView extends ItemView {
           editor.setValue(appendReplyComment(value, match, replyMeta));
           void this.renderComments();
         } catch (error) {
-          new Notice(error instanceof Error ? error.message : "追加批注失败");
+          new Notice(error instanceof Error ? error.message : "回复失败");
         }
       },
-      `追加批注${match.meta.id ? ` · ${match.meta.id}` : ""}`,
-      "追加批注"
+      `回复${match.meta.id ? ` · ${match.meta.id}` : ""}`,
+      "回复"
     ).open();
   }
 }
@@ -850,6 +1086,19 @@ class ReviewCommentsSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
+      .setName("划线时显示悬浮工具条")
+      .setDesc("开启后，选中文本时显示批注类型按钮；关闭后仍可通过右键菜单、命令面板或快捷键添加批注。")
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.showFloatingBar)
+          .onChange(async (value) => {
+            this.plugin.settings.showFloatingBar = value;
+            if (!value) this.plugin.hideFloatingBar();
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
       .setName("默认高亮批注锚点")
       .setDesc("开启后用底色高亮被批注文本；关闭后只保留轻微下划线和悬浮提示，正文阅读更安静。")
       .addToggle((toggle) =>
@@ -865,11 +1114,11 @@ class ReviewCommentsSettingTab extends PluginSettingTab {
     const list = containerEl.createEl("ul");
     for (const t of TYPES) {
       const li = list.createEl("li");
-      li.textContent = `${t.icon} ${t.label} → 标签：${t.tag}（命令：添加${t.label}批注）`;
+      li.textContent = `${t.icon} ${t.label} → 标签：${t.tag}（命令 / 右键菜单：添加${t.label}批注）`;
     }
 
     containerEl.createEl("p", {
-      text: "每种批注类型都会注册为独立命令，可在“设置 → 快捷键”中分配自己常用的快捷键。",
+      text: "每种批注类型都会注册为独立命令，也会出现在编辑器右键菜单中；可在“设置 → 快捷键”中分配常用快捷键。",
       cls: "setting-item-description",
     });
   }

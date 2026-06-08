@@ -42,31 +42,42 @@
 /* Highlights (reading mode + live preview) */
 .review-comment-highlight,
 .review-comment-highlight-live {
-  background-color: rgba(255, 235, 100, 0.4);
+  --review-comment-type-color: 230, 190, 40;
+  --review-comment-type-bg: rgba(var(--review-comment-type-color), 0.28);
+  --review-comment-type-underline: rgba(var(--review-comment-type-color), 0.86);
+  background-color: var(--review-comment-type-bg);
   border-radius: 2px;
   padding: 0 2px;
 }
 
 .review-comment-folded-anchor {
   cursor: help;
-  box-shadow: inset 0 -1px 0 rgba(255, 210, 60, 0.8);
+  box-shadow: inset 0 -2px 0 var(--review-comment-type-underline);
 }
 
 .review-comment-anchor-muted {
   background-color: transparent !important;
-  box-shadow: inset 0 -1px 0 rgba(255, 210, 60, 0.85);
+  box-shadow: inset 0 -2px 0 var(--review-comment-type-underline);
 }
 
-.review-comment-highlight[data-type="ASK"] {
-  background-color: rgba(120, 180, 255, 0.35);
+.review-comment-highlight[data-type="ASK"],
+.review-comment-highlight-live[data-type="ASK"] {
+  --review-comment-type-color: 74, 144, 226;
 }
 
-.review-comment-highlight[data-type="EDIT"] {
-  background-color: rgba(255, 170, 100, 0.4);
+.review-comment-highlight[data-type="EDIT"],
+.review-comment-highlight-live[data-type="EDIT"] {
+  --review-comment-type-color: 245, 166, 35;
 }
 
-.review-comment-highlight[data-type="PRAISE"] {
-  background-color: rgba(160, 230, 160, 0.4);
+.review-comment-highlight[data-type="PRAISE"],
+.review-comment-highlight-live[data-type="PRAISE"] {
+  --review-comment-type-color: 126, 211, 33;
+}
+
+.review-comment-highlight[data-type="NOTE"],
+.review-comment-highlight-live[data-type="NOTE"] {
+  --review-comment-type-color: 155, 120, 220;
 }
 
 .review-comment-meta-live {
@@ -80,12 +91,48 @@
 }
 
 /* Side panel cards */
+.review-comment-filterbar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.review-comment-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.review-comment-count-pill {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  background: var(--background-primary);
+}
+
+.review-comment-filter-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+}
+
+.review-comment-filter-select {
+  width: 100%;
+  min-width: 0;
+  font-size: 12px;
+}
+
 .review-comment-card {
   background: var(--background-secondary);
   border-radius: 6px;
   padding: 10px 12px;
   margin-bottom: 10px;
-  cursor: pointer;
   border-left: 3px solid var(--interactive-accent);
   transition: background 0.15s ease;
 }
@@ -123,6 +170,15 @@
   border-left-color: #7ed321;
 }
 
+.review-comment-card[data-type="NOTE"] {
+  border-left-color: #9b78dc;
+}
+
+.review-comment-card.is-reply {
+  margin-bottom: 8px;
+  background: var(--background-primary);
+}
+
 .review-comment-card-header {
   display: flex;
   align-items: center;
@@ -147,6 +203,7 @@
   word-break: break-word;
   padding-left: 8px;
   border-left: 2px solid var(--background-modifier-border);
+  cursor: pointer;
 }
 
 .review-comment-card-body {
@@ -155,6 +212,7 @@
   margin-bottom: 8px;
   word-break: break-word;
   line-height: 1.55;
+  cursor: text;
 }
 
 .review-comment-card-original.markdown-rendered p,
@@ -175,12 +233,27 @@
   font-size: 0.92em;
 }
 
+.review-comment-replies {
+  margin-top: 10px;
+  padding-left: 10px;
+  border-left: 2px solid var(--background-modifier-border);
+}
+
+.review-comment-replies .review-comment-card {
+  padding: 8px 10px;
+}
+
 .review-comment-card-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
+  min-width: 0;
 }
 
 .review-comment-action-btn {
+  flex: 1 1 auto;
+  min-width: max-content;
+  max-width: 100%;
   font-size: 11px;
   padding: 3px 10px;
   border-radius: 4px;
@@ -192,6 +265,11 @@
 
 .review-comment-action-btn:hover {
   background: var(--interactive-hover);
+}
+
+.review-comment-action-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .review-comment-close-btn:hover {

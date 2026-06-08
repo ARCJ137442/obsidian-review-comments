@@ -1,5 +1,18 @@
 export type CommentSyntax = "critic" | "hash-anchor" | "shift-anchor";
 export type CommentStatus = "open" | "closed";
+export type CommentStatusFilter = "all" | CommentStatus;
+
+export const COMMENT_FORMAT = {
+  defaultSyntax: "shift-anchor" as CommentSyntax,
+  replyAnchor: "",
+  defaultType: "NOTE",
+  metadataKeys: {
+    id: "id",
+    status: "status",
+    replyTo: "replyTo",
+    legacyReplyTo: "reply-to",
+  },
+};
 
 export interface ParsedMeta {
   author: string;
@@ -25,6 +38,18 @@ export interface ParsedComment {
   metaStart: number;
 }
 
+export interface CommentFilters {
+  status: CommentStatusFilter;
+  type: string;
+}
+
+export interface CommentSummary {
+  total: number;
+  open: number;
+  closed: number;
+  byType: Record<string, number>;
+}
+
 interface ParsedCommentMatch {
   anchor: string;
   metaSource: string;
@@ -37,7 +62,7 @@ interface Range {
 }
 
 export const COMMENT_REGEX =
-  /\{(?:==([\s\S]+?)==|=#([\s\S]+?)#=|<<([\s\S]+?)>>)\}\{>>([\s\S]+?)<<\}/g;
+  /\{(?:==([\s\S]+?)==|=#([\s\S]+?)#=|<<([\s\S]*?)>>)\}\{>>([\s\S]+?)<<\}/g;
 
 export function containsCommentMarkup(text: string): boolean {
   return (
@@ -72,9 +97,14 @@ export function parseMeta(meta: string): ParsedMeta {
       date: modern[2].trim(),
       type: modern[3].trim(),
       body,
-      id: attrs.id || findBodyId(body),
-      status: attrs.status === "closed" ? "closed" : "open",
-      replyTo: attrs.replyTo || attrs["reply-to"],
+      id: attrs[COMMENT_FORMAT.metadataKeys.id] || findBodyId(body),
+      status:
+        attrs[COMMENT_FORMAT.metadataKeys.status] === "closed"
+          ? "closed"
+          : "open",
+      replyTo:
+        attrs[COMMENT_FORMAT.metadataKeys.replyTo] ||
+        attrs[COMMENT_FORMAT.metadataKeys.legacyReplyTo],
       attrs,
     };
   }
@@ -85,7 +115,7 @@ export function parseMeta(meta: string): ParsedMeta {
     return {
       author: oldFmt[1].trim(),
       date: oldFmt[2].trim(),
-      type: "NOTE",
+      type: COMMENT_FORMAT.defaultType,
       body,
       id: findBodyId(body),
       status: "open",
@@ -96,7 +126,7 @@ export function parseMeta(meta: string): ParsedMeta {
   return {
     author: "",
     date: "",
-    type: "NOTE",
+    type: COMMENT_FORMAT.defaultType,
     body: meta,
     id: findBodyId(meta),
     status: "open",
@@ -106,14 +136,14 @@ export function parseMeta(meta: string): ParsedMeta {
 
 export function serializeMeta(meta: ParsedMeta): string {
   const attrs: Record<string, string> = { ...meta.attrs };
-  if (meta.id) attrs.id = meta.id;
-  attrs.status = meta.status || "open";
-  if (meta.replyTo) attrs.replyTo = meta.replyTo;
+  if (meta.id) attrs[COMMENT_FORMAT.metadataKeys.id] = meta.id;
+  attrs[COMMENT_FORMAT.metadataKeys.status] = meta.status || "open";
+  if (meta.replyTo) attrs[COMMENT_FORMAT.metadataKeys.replyTo] = meta.replyTo;
 
   const parts = [
     sanitizeMetaPart(meta.author || "you"),
     sanitizeMetaPart(meta.date || ""),
-    sanitizeMetaPart(meta.type || "NOTE"),
+    sanitizeMetaPart(meta.type || COMMENT_FORMAT.defaultType),
   ];
 
   for (const key of orderedAttributeKeys(attrs)) {
@@ -128,7 +158,7 @@ export function serializeMeta(meta: ParsedMeta): string {
 export function formatComment(
   anchor: string,
   meta: ParsedMeta,
-  syntax: CommentSyntax = "shift-anchor"
+  syntax: CommentSyntax = COMMENT_FORMAT.defaultSyntax
 ): string {
   const delimiters = getAnchorDelimiters(syntax);
   return `${delimiters.open}${anchor}${delimiters.close}{>>${serializeMeta(
@@ -169,6 +199,37 @@ export function findComments(text: string): ParsedComment[] {
   }
 
   return comments;
+}
+
+export function summarizeComments(comments: ParsedComment[]): CommentSummary {
+  return comments.reduce<CommentSummary>(
+    (summary, comment) => {
+      summary.total += 1;
+      if (comment.meta.status === "closed") {
+        summary.closed += 1;
+      } else {
+        summary.open += 1;
+      }
+
+      const type = comment.meta.type || COMMENT_FORMAT.defaultType;
+      summary.byType[type] = (summary.byType[type] || 0) + 1;
+      return summary;
+    },
+    { total: 0, open: 0, closed: 0, byType: {} }
+  );
+}
+
+export function filterComments(
+  comments: ParsedComment[],
+  filters: CommentFilters
+): ParsedComment[] {
+  return comments.filter((comment) => {
+    const statusMatches =
+      filters.status === "all" || comment.meta.status === filters.status;
+    const typeMatches =
+      filters.type === "all" || comment.meta.type === filters.type;
+    return statusMatches && typeMatches;
+  });
 }
 
 export function replaceCommentStatus(
@@ -245,7 +306,11 @@ export function appendReplyComment(
   reply: ParsedMeta
 ): string {
   assertCommentSlice(text, comment);
-  const replyMarkup = formatComment(comment.anchor, reply, "shift-anchor");
+  const replyMarkup = formatComment(
+    COMMENT_FORMAT.replyAnchor,
+    reply,
+    COMMENT_FORMAT.defaultSyntax
+  );
   return text.slice(0, comment.end) + " " + replyMarkup + text.slice(comment.end);
 }
 
@@ -294,9 +359,17 @@ function parseAttributes(attrsSource: string): Record<string, string> {
 }
 
 function orderedAttributeKeys(attrs: Record<string, string>): string[] {
-  const preferred = ["id", "status", "replyTo"];
+  const preferred = [
+    COMMENT_FORMAT.metadataKeys.id,
+    COMMENT_FORMAT.metadataKeys.status,
+    COMMENT_FORMAT.metadataKeys.replyTo,
+  ];
   const rest = Object.keys(attrs)
-    .filter((key) => !preferred.includes(key) && key !== "reply-to")
+    .filter(
+      (key) =>
+        !preferred.includes(key) &&
+        key !== COMMENT_FORMAT.metadataKeys.legacyReplyTo
+    )
     .sort();
   return [...preferred, ...rest].filter((key) => key in attrs);
 }
