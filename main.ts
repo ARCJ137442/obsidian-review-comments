@@ -18,6 +18,7 @@ import {
   EditorView,
   ViewPlugin,
   ViewUpdate,
+  WidgetType,
 } from "@codemirror/view";
 import { RangeSetBuilder } from "@codemirror/state";
 import {
@@ -73,6 +74,11 @@ const TYPE_LABEL: Record<string, string> = TYPES.reduce((acc, t) => {
   acc[t.tag] = t.label;
   return acc;
 }, {} as Record<string, string>);
+
+interface HeadingCommentContext {
+  line: number;
+  target: string;
+}
 
 class CommentInputModal extends Modal {
   private readonly typeTag: string;
@@ -156,7 +162,7 @@ export default class ReviewCommentsPlugin extends Plugin {
     for (const t of TYPES) {
       this.addCommand({
         id: `add-comment-${t.id}`,
-        name: `添加${t.label}批注 ${t.icon} 到选中文本`,
+        name: `添加${t.label} ${t.icon}`,
         editorCallback: (editor: Editor) =>
           this.addCommentToSelection(editor, t.tag),
       });
@@ -174,7 +180,6 @@ export default class ReviewCommentsPlugin extends Plugin {
     });
     this.registerEvent(
       this.app.workspace.on("editor-menu", (menu, editor) => {
-        if (!editor.getSelection()) return;
         menu.addSeparator();
         menu.addItem((item) =>
           item
@@ -247,10 +252,6 @@ export default class ReviewCommentsPlugin extends Plugin {
 
   addCommentToSelection(editor: Editor, typeTag: string = "NOTE") {
     const selection = editor.getSelection();
-    if (!selection) {
-      new Notice("请先选择文本");
-      return;
-    }
     if (containsCommentMarkup(selection)) {
       new Notice("选区中已经包含批注标记");
       return;
@@ -258,24 +259,77 @@ export default class ReviewCommentsPlugin extends Plugin {
 
     const from = editor.getCursor("from");
     const to = editor.getCursor("to");
+    const headingContext = this.getHeadingCommentContext(
+      editor,
+      from,
+      to
+    );
+    const title = headingContext
+      ? `添加${TYPE_LABEL[typeTag] || "备注"}标题批注`
+      : selection
+        ? undefined
+        : `添加${TYPE_LABEL[typeTag] || "备注"}单点批注`;
+
     new CommentInputModal(this.app, typeTag, (body) => {
-      const date = formatDate(new Date(), this.settings.dateFormat);
-      const author = sanitizeAuthor(this.settings.authorName);
-      const commentBody = this.escapeCommentBody(
-        body.trim() || "请填写批注"
-      );
-      const wrapped = formatComment(selection, {
-        author,
-        date,
-        type: typeTag,
-        body: commentBody,
-        id: generateCommentId(),
-        status: "open",
-        attrs: {},
-      });
-      editor.replaceRange(wrapped, from, to);
+      const meta = this.createCommentMeta(typeTag, body);
+      if (headingContext) {
+        meta.attrs = {
+          ...meta.attrs,
+          scope: "heading",
+          target: headingContext.target,
+        };
+        this.insertPointCommentAfterLine(editor, headingContext.line, meta);
+      } else if (selection) {
+        editor.replaceRange(formatComment(selection, meta), from, to);
+      } else {
+        editor.replaceRange(formatComment("", meta), from, to);
+      }
       editor.focus();
-    }).open();
+    }, title).open();
+  }
+
+  createCommentMeta(typeTag: string, body: string): ParsedMeta {
+    const date = formatDate(new Date(), this.settings.dateFormat);
+    const author = sanitizeAuthor(this.settings.authorName);
+    return {
+      author,
+      date,
+      type: typeTag,
+      body: this.escapeCommentBody(body.trim() || "请填写批注"),
+      id: generateCommentId(),
+      status: "open",
+      attrs: {},
+    };
+  }
+
+  getHeadingCommentContext(
+    editor: Editor,
+    from: { line: number; ch: number },
+    to: { line: number; ch: number }
+  ): HeadingCommentContext | null {
+    if (from.line !== to.line) return null;
+    const lineText = editor.getLine(from.line);
+    const target = extractHeadingTarget(lineText);
+    if (!target) return null;
+    return { line: from.line, target };
+  }
+
+  insertPointCommentAfterLine(
+    editor: Editor,
+    line: number,
+    meta: ParsedMeta
+  ) {
+    const markup = formatComment("", meta);
+    const nextLine = line + 1;
+    if (nextLine < editor.lineCount()) {
+      editor.replaceRange(`${markup}\n`, { line: nextLine, ch: 0 });
+      return;
+    }
+
+    editor.replaceRange(`\n${markup}`, {
+      line,
+      ch: editor.getLine(line).length,
+    });
   }
 
   async activateView() {
@@ -422,12 +476,18 @@ export default class ReviewCommentsPlugin extends Plugin {
 
         const meta = comment.meta;
         const span = document.createElement("span");
-        span.className = "review-comment-highlight";
-        if (!this.settings.highlightAnchors) {
-          span.classList.add("review-comment-anchor-muted");
+        if (comment.anchor) {
+          span.className = "review-comment-highlight";
+          if (!this.settings.highlightAnchors) {
+            span.classList.add("review-comment-anchor-muted");
+          }
+          span.textContent = comment.anchor;
+        } else {
+          span.className = "review-comment-point";
+          span.textContent = "•";
+          span.setAttribute("aria-label", "单点批注");
         }
         span.dataset.type = meta.type;
-        span.textContent = comment.anchor;
         span.setAttribute(
           "title",
           formatThreadTitle(comment.entries)
@@ -446,7 +506,7 @@ export default class ReviewCommentsPlugin extends Plugin {
 
 function sanitizeAuthor(name: string): string {
   const trimmed = (name || "").trim();
-  const stripped = trimmed.replace(/[|<>{}=]/g, "_");
+  const stripped = trimmed.replace(/[|:<>;{}=]/g, "_");
   return stripped || "you";
 }
 
@@ -469,6 +529,38 @@ function selectionTouchesComment(view: EditorView, start: number, end: number): 
     if (range.empty) return range.from >= start && range.from <= end;
     return range.from < end && range.to > start;
   });
+}
+
+function extractHeadingTarget(line: string): string | null {
+  const match = line.match(/^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$/);
+  return match?.[1].trim() || null;
+}
+
+class CommentPointWidget extends WidgetType {
+  constructor(
+    private readonly title: string,
+    private readonly type: string
+  ) {
+    super();
+  }
+
+  eq(other: CommentPointWidget): boolean {
+    return this.title === other.title && this.type === other.type;
+  }
+
+  toDOM(): HTMLElement {
+    const span = document.createElement("span");
+    span.className = "review-comment-point-live";
+    span.dataset.type = this.type;
+    span.textContent = "•";
+    span.title = this.title;
+    span.setAttribute("aria-label", "单点批注");
+    return span;
+  }
+
+  ignoreEvent(): boolean {
+    return false;
+  }
 }
 
 function createCommentDecorationExtension(
@@ -504,6 +596,25 @@ function createCommentDecorationExtension(
           const meta = comment.meta;
           const title = formatThreadTitle(comment.entries);
           const expanded = !foldMarkup || selectionTouchesComment(view, start, end);
+
+          if (!comment.anchor) {
+            if (expanded) {
+              builder.add(
+                metaStart,
+                end,
+                Decoration.mark({ class: "review-comment-meta-live" })
+              );
+            } else {
+              builder.add(
+                start,
+                end,
+                Decoration.replace({
+                  widget: new CommentPointWidget(title, meta.type),
+                })
+              );
+            }
+            continue;
+          }
 
           if (!expanded) {
             builder.add(start, highlightTextStart, Decoration.replace({}));
@@ -646,7 +757,7 @@ class CommentsView extends ItemView {
 
     if (matches.length === 0) {
       container.createEl("p", {
-        text: "还没有批注。选中文本后，通过右键菜单、命令面板、快捷键或浮动工具条添加批注。",
+        text: "还没有批注。选中文本可添加锚定批注；无选区时可通过右键菜单、命令面板或快捷键添加单点批注。",
         cls: "review-comment-empty",
       });
       return;
@@ -707,15 +818,19 @@ class CommentsView extends ItemView {
     }
 
     const content = card.createDiv({ cls: "review-comment-card-content" });
+    const original = content.createDiv({ cls: "review-comment-card-original" });
+    const originalText = getCommentAnchorLabel(match);
     if (match.anchor) {
-      const original = content.createDiv({ cls: "review-comment-card-original" });
-      await this.renderMarkdownBlock(original, match.anchor, sourcePath);
-      original.setAttribute("title", "单击定位到原文");
-      original.addEventListener("click", (e) => {
-        e.stopPropagation();
-        this.jumpTo(mdView, match.offset, match.full.length);
-      });
+      await this.renderMarkdownBlock(original, originalText, sourcePath);
+    } else {
+      original.textContent = originalText;
+      original.classList.add("is-point");
     }
+    original.setAttribute("title", "单击定位到原文");
+    original.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.jumpTo(mdView, match.offset, match.full.length);
+    });
 
     const threadEl = content.createDiv({ cls: "review-comment-thread" });
     for (const entry of match.entries) {
@@ -970,6 +1085,14 @@ function getThreadStatus(thread: ParsedComment): ParsedMeta["status"] {
   return thread.entries.some((entry) => entry.meta.status === "open")
     ? "open"
     : "closed";
+}
+
+function getCommentAnchorLabel(comment: ParsedComment): string {
+  if (comment.anchor) return comment.anchor;
+  if (comment.meta.attrs.scope === "heading") {
+    return `标题批注：${comment.meta.attrs.target || "未命名标题"}`;
+  }
+  return "单点批注";
 }
 
 function formatThreadTitle(entries: ParsedCommentEntry[]): string {

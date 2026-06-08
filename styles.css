@@ -61,23 +61,44 @@
 }
 
 .review-comment-highlight[data-type="ASK"],
-.review-comment-highlight-live[data-type="ASK"] {
+.review-comment-highlight-live[data-type="ASK"],
+.review-comment-point[data-type="ASK"],
+.review-comment-point-live[data-type="ASK"] {
   --review-comment-type-color: 74, 144, 226;
 }
 
 .review-comment-highlight[data-type="EDIT"],
-.review-comment-highlight-live[data-type="EDIT"] {
+.review-comment-highlight-live[data-type="EDIT"],
+.review-comment-point[data-type="EDIT"],
+.review-comment-point-live[data-type="EDIT"] {
   --review-comment-type-color: 245, 166, 35;
 }
 
 .review-comment-highlight[data-type="PRAISE"],
-.review-comment-highlight-live[data-type="PRAISE"] {
+.review-comment-highlight-live[data-type="PRAISE"],
+.review-comment-point[data-type="PRAISE"],
+.review-comment-point-live[data-type="PRAISE"] {
   --review-comment-type-color: 126, 211, 33;
 }
 
 .review-comment-highlight[data-type="NOTE"],
-.review-comment-highlight-live[data-type="NOTE"] {
+.review-comment-highlight-live[data-type="NOTE"],
+.review-comment-point[data-type="NOTE"],
+.review-comment-point-live[data-type="NOTE"] {
   --review-comment-type-color: 155, 120, 220;
+}
+
+.review-comment-point,
+.review-comment-point-live {
+  --review-comment-type-color: 155, 120, 220;
+  display: inline-block;
+  margin: 0 0.08em;
+  color: rgba(var(--review-comment-type-color), 0.95);
+  font-size: 0.92em;
+  font-weight: 700;
+  line-height: 1;
+  vertical-align: baseline;
+  cursor: help;
 }
 
 .review-comment-meta-live {
@@ -199,6 +220,11 @@
   padding-left: 8px;
   border-left: 2px solid var(--background-modifier-border);
   cursor: pointer;
+}
+
+.review-comment-card-original.is-point {
+  color: var(--text-muted);
+  font-style: italic;
 }
 
 .review-comment-card-body {

@@ -1,9 +1,13 @@
-export type CommentSyntax = "critic" | "hash-anchor" | "shift-anchor";
+export type CommentSyntax =
+  | "critic"
+  | "hash-anchor"
+  | "shift-anchor"
+  | "plain-anchor";
 export type CommentStatus = "open" | "closed";
 export type CommentStatusFilter = "all" | CommentStatus;
 
 export const COMMENT_FORMAT = {
-  defaultSyntax: "shift-anchor" as CommentSyntax,
+  defaultSyntax: "plain-anchor" as CommentSyntax,
   defaultType: "NOTE",
   metadataKeys: {
     id: "id",
@@ -74,7 +78,6 @@ interface Range {
   end: number;
 }
 
-const ANCHOR_REGEX = /\{(?:==([\s\S]+?)==|=#([\s\S]+?)#=|<<([\s\S]*?)>>)\}/g;
 const META_OPEN = "{>>";
 const META_CLOSE = "<<}";
 
@@ -96,10 +99,14 @@ export function getAnchorDelimiters(
 ): { open: string; close: string } {
   if (syntax === "critic") return { open: "{==", close: "==}" };
   if (syntax === "hash-anchor") return { open: "{=#", close: "#=}" };
+  if (syntax === "plain-anchor") return { open: "{", close: "}" };
   return { open: "{<<", close: ">>}" };
 }
 
 export function parseMeta(meta: string): ParsedMeta {
+  const semicolon = parseSemicolonMeta(meta);
+  if (semicolon) return semicolon;
+
   const modern = meta.match(
     /^([^|]+)\|([^|]*)\|([^|:]+)((?:\|[^|:]+=[^|:]*)*):\s*([\s\S]*)$/
   );
@@ -152,15 +159,20 @@ export function serializeMeta(meta: ParsedMeta): string {
   if (isMinimalDraftMeta(meta)) return meta.body || "";
 
   const attrs: Record<string, string> = { ...meta.attrs };
+  delete attrs.author;
+  delete attrs.date;
+  delete attrs.type;
   if (meta.id) attrs[COMMENT_FORMAT.metadataKeys.id] = meta.id;
-  attrs[COMMENT_FORMAT.metadataKeys.status] = meta.status || "open";
+  if (meta.status === "closed") {
+    attrs[COMMENT_FORMAT.metadataKeys.status] = "closed";
+  } else {
+    delete attrs[COMMENT_FORMAT.metadataKeys.status];
+  }
   if (meta.replyTo) attrs[COMMENT_FORMAT.metadataKeys.replyTo] = meta.replyTo;
 
-  const parts = [
-    sanitizeMetaPart(meta.author || "you"),
-    sanitizeMetaPart(meta.date || ""),
-    sanitizeMetaPart(meta.type || COMMENT_FORMAT.defaultType),
-  ];
+  const parts = [`author=${sanitizeAttributeValue(meta.author || "you")}`];
+  if (meta.date) parts.push(`date=${sanitizeAttributeValue(meta.date)}`);
+  parts.push(`type=${sanitizeAttributeValue(meta.type || COMMENT_FORMAT.defaultType)}`);
 
   for (const key of orderedAttributeKeys(attrs)) {
     const value = attrs[key];
@@ -168,7 +180,7 @@ export function serializeMeta(meta: ParsedMeta): string {
     parts.push(`${sanitizeAttributeKey(key)}=${sanitizeAttributeValue(value)}`);
   }
 
-  return `${parts.join("|")}: ${meta.body || ""}`;
+  return `${parts.join(";")}: ${meta.body || ""}`;
 }
 
 export function formatMetaEntry(meta: ParsedMeta): string {
@@ -190,16 +202,17 @@ export function findComments(text: string): ParsedComment[] {
   if (!containsCommentMarkup(text)) return [];
 
   const codeRanges = getFencedCodeRanges(text);
-  const regex = new RegExp(ANCHOR_REGEX);
   const comments: ParsedComment[] = [];
-  let match: RegExpExecArray | null;
+  let cursor = 0;
 
-  while ((match = regex.exec(text))) {
-    if (isInsideRange(match.index, codeRanges)) continue;
-
-    const anchorMatch = parseAnchorMatch(match);
+  while (cursor < text.length) {
+    const anchorMatch = findNextAnchor(text, cursor, codeRanges);
+    if (!anchorMatch) break;
     const entries = collectMetaEntries(text, anchorMatch.closeEnd, codeRanges);
-    if (entries.length === 0) continue;
+    if (entries.length === 0) {
+      cursor = anchorMatch.closeEnd;
+      continue;
+    }
 
     const end = entries[entries.length - 1].end;
     const full = text.slice(anchorMatch.offset, end);
@@ -219,7 +232,7 @@ export function findComments(text: string): ParsedComment[] {
       entries,
     });
 
-    regex.lastIndex = end;
+    cursor = end;
   }
 
   return comments;
@@ -354,28 +367,6 @@ export function generateCommentId(date: Date = new Date()): string {
   return `RC-${y}${m}${d}-${hh}${mm}${ss}-${suffix}`;
 }
 
-function parseAnchorMatch(match: RegExpExecArray): AnchorMatch {
-  const syntax =
-    match[1] !== undefined
-      ? "critic"
-      : match[2] !== undefined
-        ? "hash-anchor"
-        : "shift-anchor";
-  const anchor = match[1] ?? match[2] ?? match[3] ?? "";
-  const delimiters = getAnchorDelimiters(syntax);
-  const anchorStart = match.index + delimiters.open.length;
-  const anchorEnd = anchorStart + anchor.length;
-
-  return {
-    anchor,
-    syntax,
-    offset: match.index,
-    anchorStart,
-    anchorEnd,
-    closeEnd: match.index + match[0].length,
-  };
-}
-
 function collectMetaEntries(
   text: string,
   start: number,
@@ -437,6 +428,123 @@ function parseAttributes(attrsSource: string): Record<string, string> {
   return attrs;
 }
 
+function parseSemicolonMeta(meta: string): ParsedMeta | null {
+  const colon = meta.indexOf(":");
+  if (colon === -1) return null;
+
+  const head = meta.slice(0, colon);
+  if (!/(^|;)\s*[A-Za-z][A-Za-z0-9_-]*\s*=/.test(head)) return null;
+
+  const attrs: Record<string, string> = {};
+  for (const part of head.split(";")) {
+    if (!part.trim()) continue;
+    const eq = part.indexOf("=");
+    if (eq === -1) continue;
+    const key = part.slice(0, eq).trim();
+    const value = part.slice(eq + 1).trim();
+    if (key) attrs[key] = value;
+  }
+
+  const body = meta.slice(colon + 1).trim();
+  const author = attrs.author || "";
+  const date = attrs.date || "";
+  const type = attrs.type || COMMENT_FORMAT.defaultType;
+  const id = attrs[COMMENT_FORMAT.metadataKeys.id] || findBodyId(body);
+  const status =
+    attrs[COMMENT_FORMAT.metadataKeys.status] === "closed" ? "closed" : "open";
+  const replyTo =
+    attrs[COMMENT_FORMAT.metadataKeys.replyTo] ||
+    attrs[COMMENT_FORMAT.metadataKeys.legacyReplyTo];
+
+  const rest = { ...attrs };
+  delete rest.author;
+  delete rest.date;
+  delete rest.type;
+
+  return {
+    author,
+    date,
+    type,
+    body,
+    id,
+    status,
+    replyTo,
+    attrs: rest,
+  };
+}
+
+function findNextAnchor(
+  text: string,
+  start: number,
+  codeRanges: Range[]
+): AnchorMatch | null {
+  let cursor = start;
+
+  while (cursor < text.length) {
+    const offset = text.indexOf("{", cursor);
+    if (offset === -1) return null;
+
+    const range = containingRange(offset, codeRanges);
+    if (range) {
+      cursor = range.end;
+      continue;
+    }
+
+    const legacy = parseLegacyAnchorAt(text, offset);
+    if (legacy) return legacy;
+
+    const plain = parsePlainAnchorAt(text, offset);
+    if (plain) return plain;
+
+    cursor = offset + 1;
+  }
+
+  return null;
+}
+
+function parseLegacyAnchorAt(text: string, offset: number): AnchorMatch | null {
+  const variants: { syntax: CommentSyntax; open: string; close: string }[] = [
+    { syntax: "critic", open: "{==", close: "==}" },
+    { syntax: "hash-anchor", open: "{=#", close: "#=}" },
+    { syntax: "shift-anchor", open: "{<<", close: ">>}" },
+  ];
+
+  for (const variant of variants) {
+    if (!text.startsWith(variant.open, offset)) continue;
+    const anchorStart = offset + variant.open.length;
+    const close = text.indexOf(variant.close, anchorStart);
+    if (close === -1) return null;
+    return {
+      anchor: text.slice(anchorStart, close),
+      syntax: variant.syntax,
+      offset,
+      anchorStart,
+      anchorEnd: close,
+      closeEnd: close + variant.close.length,
+    };
+  }
+
+  return null;
+}
+
+function parsePlainAnchorAt(text: string, offset: number): AnchorMatch | null {
+  if (text.startsWith(META_OPEN, offset)) return null;
+  const anchorStart = offset + 1;
+  const close = text.indexOf("}", anchorStart);
+  if (close === -1) return null;
+  const closeEnd = close + 1;
+  if (!text.startsWith(META_OPEN, closeEnd)) return null;
+
+  return {
+    anchor: text.slice(anchorStart, close),
+    syntax: "plain-anchor",
+    offset,
+    anchorStart,
+    anchorEnd: close,
+    closeEnd,
+  };
+}
+
 function isMinimalDraftMeta(meta: ParsedMeta): boolean {
   return (
     !meta.author &&
@@ -466,7 +574,7 @@ function orderedAttributeKeys(attrs: Record<string, string>): string[] {
 }
 
 function sanitizeMetaPart(value: string): string {
-  return value.replace(/[|:<>]/g, "_").trim();
+  return value.replace(/[|:<>;{}]/g, "_").trim();
 }
 
 function sanitizeAttributeKey(value: string): string {
@@ -474,7 +582,7 @@ function sanitizeAttributeKey(value: string): string {
 }
 
 function sanitizeAttributeValue(value: string): string {
-  return value.replace(/[|:<>]/g, "_").trim();
+  return value.replace(/[|:<>;{}]/g, "_").trim();
 }
 
 function findBodyId(body: string): string | undefined {
@@ -521,4 +629,8 @@ function getFencedCodeRanges(text: string): Range[] {
 
 function isInsideRange(offset: number, ranges: Range[]): boolean {
   return ranges.some((range) => offset >= range.start && offset < range.end);
+}
+
+function containingRange(offset: number, ranges: Range[]): Range | undefined {
+  return ranges.find((range) => offset >= range.start && offset < range.end);
 }

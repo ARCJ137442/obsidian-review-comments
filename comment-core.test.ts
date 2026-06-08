@@ -14,6 +14,80 @@ import {
 } from "./comment-core";
 
 describe("comment-core parsing", () => {
+  it("parses the preferred plain-anchor format", () => {
+    const source =
+      "正文 {传输函子}{>>author=Argon;date=2026-06-09;type=ASK;id=RC-A: 比较奇怪<<} 继续";
+
+    const comments = findComments(source);
+
+    expect(comments).toHaveLength(1);
+    expect(comments[0].anchor).toBe("传输函子");
+    expect(comments[0].syntax).toBe("plain-anchor");
+    expect(comments[0].entries).toHaveLength(1);
+    expect(comments[0].meta).toMatchObject({
+      author: "Argon",
+      date: "2026-06-09",
+      type: "ASK",
+      body: "比较奇怪",
+      id: "RC-A",
+      status: "open",
+    });
+  });
+
+  it("does not parse bare empty braces as point comments", () => {
+    const source = ["{}", "{}{}{}", "前 {} 后"].join("\n");
+
+    const comments = findComments(source);
+
+    expect(comments).toHaveLength(0);
+  });
+
+  it("does not parse plain braces unless metadata follows immediately", () => {
+    const source = ["{普通文本}", "{普通文本} {>>批注<<}"].join("\n");
+
+    const comments = findComments(source);
+
+    expect(comments).toHaveLength(0);
+  });
+
+  it("parses point comments only when empty braces are followed by metadata", () => {
+    const source =
+      "{}{>>author=Argon;date=2026-06-09;type=NOTE;id=RC-P1: 单点批注<<}";
+
+    const [thread] = findComments(source);
+
+    expect(thread.anchor).toBe("");
+    expect(thread.syntax).toBe("plain-anchor");
+    expect(thread.entries).toHaveLength(1);
+    expect(thread.meta).toMatchObject({
+      author: "Argon",
+      date: "2026-06-09",
+      type: "NOTE",
+      id: "RC-P1",
+      status: "open",
+      body: "单点批注",
+    });
+  });
+
+  it("parses long point-comment threads without requiring replyTo", () => {
+    const entries = Array.from({ length: 60 }, (_, index) => {
+      const n = String(index + 1).padStart(2, "0");
+      return `{>>author=Agent;date=2026-06-09;type=NOTE;id=RC-P-${n}: 第 ${n} 条<<}`;
+    }).join("");
+    const source = `{}${entries} 后文`;
+
+    const [thread] = findComments(source);
+
+    expect(thread.anchor).toBe("");
+    expect(thread.entries).toHaveLength(60);
+    expect(thread.entries[0].meta.id).toBe("RC-P-01");
+    expect(thread.entries[59].meta.body).toBe("第 60 条");
+    expect(thread.entries.every((entry) => entry.meta.replyTo === undefined)).toBe(
+      true
+    );
+    expect(source.slice(thread.end)).toBe(" 后文");
+  });
+
   it("parses the ExoNet shift-anchor format", () => {
     const source =
       "正文 {<<锚定文本>>}{>>Argon|2026-06-08|NOTE|id=RC-1|status=open: **批注**<<} 继续";
@@ -279,8 +353,9 @@ describe("comment-core editing", () => {
     const markup = formatComment("锚点", meta);
 
     expect(markup).toBe(
-      "{<<锚点>>}{>>Argon|2026-06-08|NOTE|id=RC-4|status=open: 正文<<}"
+      "{锚点}{>>author=Argon;date=2026-06-08;type=NOTE;id=RC-4: 正文<<}"
     );
+    expect(markup).not.toContain("|");
   });
 
   it("formats body-only human drafts without forcing metadata", () => {
@@ -293,7 +368,7 @@ describe("comment-core editing", () => {
       attrs: {},
     });
 
-    expect(markup).toBe("{<<原文>>}{>>批注<<}");
+    expect(markup).toBe("{原文}{>>批注<<}");
   });
 
   it("closes a single first entry without deleting the source evidence", () => {
@@ -429,7 +504,7 @@ describe("comment-core editing", () => {
     });
 
     expect(next).toBe(
-      "{<<锚点>>}{>>Argon|2026-06-08|ASK|id=RC-7|status=open: 为什么？<<}{>>GPT-5.5·Codex|2026-06-08|NOTE|id=RC-8|status=open: 因为这里需要补定义。<<}"
+      "{<<锚点>>}{>>Argon|2026-06-08|ASK|id=RC-7|status=open: 为什么？<<}{>>author=GPT-5.5·Codex;date=2026-06-08;type=NOTE;id=RC-8: 因为这里需要补定义。<<}"
     );
     const [updated] = findComments(next);
     expect(updated.entries).toHaveLength(2);
@@ -451,7 +526,7 @@ describe("comment-core editing", () => {
     });
 
     expect(next).toBe(
-      "{<<原文>>}{>>人类批注<<}{>>GPT-5.5·Codex|2026-06-08|NOTE|id=RC-AGENT|status=open: Agent 回复<<}"
+      "{<<原文>>}{>>人类批注<<}{>>author=GPT-5.5·Codex;date=2026-06-08;type=NOTE;id=RC-AGENT: Agent 回复<<}"
     );
     expect(findComments(next)[0].entries.map((entry) => entry.meta.body)).toEqual([
       "人类批注",
@@ -465,7 +540,7 @@ describe("comment-core editing", () => {
 
     const next = replaceCommentThreadStatus(source, thread, "closed");
 
-    expect(next).toBe("{<<原文>>}{>>you||NOTE|status=closed: 人类批注<<}");
+    expect(next).toBe("{<<原文>>}{>>author=you;type=NOTE;status=closed: 人类批注<<}");
     expect(findComments(next)[0].meta.status).toBe("closed");
   });
 

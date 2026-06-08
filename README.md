@@ -1,27 +1,31 @@
 # Obsidian Review Comments
 
+> English README: [README.en.md](./README.en.md)
 > 日本語版 README: [README.ja.md](./README.ja.md)
 
-Notion-style review comments for Obsidian. Select text, add a comment from the right-click menu, command palette, hotkey, or optional floating toolbar. Comments are stored directly in `.md` files, so Claude / GPT can read the file and apply the requested edits without any export step.
+面向 Obsidian 的 Notion 风格批注插件。你可以选中文本后通过右键菜单、命令面板、快捷键或可选的悬浮工具条添加批注。批注直接存储在 `.md` 文件中，所以 Claude / GPT 等 Agent 可以直接读取 Markdown 源文件并应用修改，不需要额外导出。
 
-## Comment format
+## 批注格式
 
 ```markdown
-The original {<<text>>}{>>shirai|2026-05-13|EDIT|id=RC-20260513-120000-ABCD|status=open: please rewrite<<} has an issue.
-Minimal human draft: {<<text>>}{>>please rewrite<<}
+原文中这段 {文本}{>>author=shirai;date=2026-05-13;type=EDIT;id=RC-20260513-120000-ABCD: 请改写<<} 有问题。
+人类最小草稿：{文本}{>>请改写<<}
+单点批注：{}{>>author=shirai;date=2026-05-13;type=NOTE;id=RC-20260513-120100-WXYZ: 这里需要补充说明<<}
 ```
 
-- `{<<...>>}` — anchored source text. This fork writes this format by default because it does not collide with Obsidian / CriticMarkup highlight syntax.
-- `{>>author|date|TYPE|id=RC-...|status=open: comment<<}` — full comment metadata. Known `TYPE` values are `ASK`, `EDIT`, `PRAISE`, and `NOTE`; custom types are parsed and preserved.
-- `{>>comment<<}` — minimal human draft. Author, date, type, id, and status are optional when typing by hand; the plugin / LLM tooling can normalize them later.
-- `id=RC-...` is recommended for stable automation, but not required for human-readable comments. A thread can still be found by its anchored source text and surrounding context.
-- `status` is currently `open` or `closed`. Closing a comment preserves the source evidence instead of deleting it.
-- Replies are stored as additional metadata blocks on the same anchored thread: `{<<anchor>>}{>>first<<}{>>second<<}`.
-- New replies do not need `replyTo`; each `{>>...<<}` after the first one is a linear reply to the previous comment in that thread.
-- Legacy `{==...==}{>>...<<}` and transitional `{=#...#=}{>>...<<}` comments are still parsed for backward compatibility.
-- Anchors and comment bodies may span multiple lines. The sidebar renders basic Markdown for both the anchored text and the comment body.
+- `{...}` 表示锚定原文。本 fork 默认写入这种 plain-anchor 格式，避免 Obsidian 把 `{<<word>>}` 中的 `<word>` 误识别为类似 HTML 的标签。
+- `{}{>>...<<}` 表示没有选中文本的单点批注。裸 `{}` 或 `{}{}{}` 这类连续花括号只是普通文本，只有紧跟 `{>>...<<}` 时才会被识别为批注。
+- `{>>author=...;date=...;type=...;id=RC-...: 正文<<}` 表示完整批注元数据。元数据使用分号分隔的 key-value 形式，避免 `|` 破坏 Markdown 表格。内置 `type` 包括 `ASK`、`EDIT`、`PRAISE`、`NOTE`，自定义类型也会被解析并保留。
+- `{>>正文<<}` 是人类手写的最小草稿。手写时可以省略 author、date、type、id、status，插件和 Agent 工具后续可按需规范化。
+- `id=RC-...` 推荐用于自动化、回复、关闭、迁移和 Agent 交接，但不是人类可读批注的强制字段。没有 id 的批注仍可通过锚定原文、周围上下文和线程顺序定位。
+- `status` 当前支持 `open` 和 `closed`。缺省状态即 `open`，所以新建 open 批注通常不写 `status=open`；关闭时显式写入 `status=closed`，并保留 Markdown 批注证据。
+- 回复是同一个锚点后的连续 metadata block：`{锚点}{>>第一条<<}{>>第二条<<}`。
+- 新回复不需要 `replyTo`。第一条之后的每个 `{>>...<<}` 都被视为同一线性线程中对上一条批注的回复。
+- 旧格式 `{<<...>>}{>>...<<}`、`{==...==}{>>...<<}` 和过渡格式 `{=#...#=}{>>...<<}` 仍可兼容读取，但插件新写入默认使用 `{...}{>>...<<}`。
+- 标题批注会插入为标题下方的单点批注，避免批注标记进入 Obsidian 标题索引。
+- 锚定文本和批注正文都可以跨行；侧栏会对锚定原文与批注正文做基础 Markdown 渲染。
 
-## Build
+## 构建
 
 ```bash
 git clone https://github.com/ShotaShirai1719/obsidian-review-comments.git
@@ -30,67 +34,67 @@ npm install
 npm run build
 ```
 
-This produces `main.js`.
+构建完成后会生成 `main.js`。
 
-## Install
+## 安装
 
-Let `$VAULT` be the absolute path to your Obsidian vault:
+设 `$VAULT` 为 Obsidian 仓库的绝对路径：
 
 ```bash
 mkdir -p "$VAULT/.obsidian/plugins/review-comments"
 cp main.js manifest.json styles.css "$VAULT/.obsidian/plugins/review-comments/"
 ```
 
-Do not overwrite `data.json` during routine deployments. That file contains vault-specific runtime settings such as author name, auto-open, floating toolbar, and highlight preferences. Avoid wildcard or whole-directory sync commands into the vault plugin directory; copy the three build artifacts explicitly.
+例行部署时不要覆盖 `data.json`。这个文件保存 vault 本地运行配置，例如作者名、启动时自动打开侧栏、悬浮工具条和高亮偏好。也不要用通配符或整目录同步命令覆盖插件目录；只显式复制 `main.js`、`manifest.json`、`styles.css` 这三个构建产物。
 
-Or, for development, symlink the working directory:
+开发时也可以把当前工作目录软链接到插件目录：
 
 ```bash
 ln -s "$(pwd)" "$VAULT/.obsidian/plugins/review-comments"
 ```
 
-Then in Obsidian:
+然后在 Obsidian 中：
 
-1. Settings → Community plugins → enable **Review Comments**
-2. Settings → Review Comments → set `Author name` to your own name
+1. 打开 Settings -> Community plugins，启用 **Review Comments**
+2. 打开 Settings -> Review Comments，把 `Author name` 设置为你自己的名字
 
-## Usage
+## 使用
 
-1. Drag-select a span of text
-2. Right-click the selection and choose a comment type, or use the optional floating toolbar
-3. Enter your comment in the modal. Multiline notes, bullet lists, links, inline code, and other basic Markdown are supported in the sidebar.
+1. 选中一段文本
+2. 右键选择批注类型，或使用可选的悬浮工具条
+3. 在弹窗中输入批注。侧栏支持多行备注、列表、链接、行内代码等基础 Markdown 展示。
 
-Alternatively:
+也可以使用：
 
-- Select text → Command palette → `Review Comments: Add comment to selection`
-- Select text → optional floating toolbar type button
-- Assign a hotkey (recommended: `Cmd + Shift + M`)
+- 选中文本 -> 命令面板 -> `Review Comments: Add comment to selection`
+- 选中文本 -> 可选悬浮工具条类型按钮
+- 绑定快捷键，推荐 `Cmd + Shift + M`
 
-The floating toolbar can be disabled in plugin settings without affecting the right-click menu, commands, or hotkeys.
+悬浮工具条可以在插件设置中关闭，不影响右键菜单、命令面板或快捷键。
 
-## Side panel
+## 侧栏面板
 
-Open the comments panel from the left ribbon (speech-bubble icon) or via `Review Comments: Open comments panel`.
+可以通过左侧 ribbon 的对话气泡图标，或命令 `Review Comments: Open comments panel` 打开批注面板。
 
-- The top of the panel shows total / open / closed counts for the current file.
-- Use the status and type filters to focus on open comments, closed comments, or a specific comment type.
-- Click the anchored source text → jump to the corresponding location in the document.
-- Double-click the comment body → edit the existing comment in place.
-- The anchored text and comment body are rendered as basic Markdown.
-- `回复` → append a new `{>>...<<}` block at the end of the selected linear thread.
-- `关闭` → set `status=closed` for the comment thread while preserving the Markdown comment.
-- Closed comments are folded by default. Use `展开` to inspect them and `打开` to restore the thread to `status=open`.
-- `Delete` / `删除` is a separate destructive action. The first click arms the button as `确认删除`; the second click removes the selected comment markup and restores its anchor text.
+- 面板顶部显示当前文件的全部 / open / closed 计数。
+- 可以按状态和类型筛选 open、closed 或某一种批注类型。
+- 单击锚定原文可以跳转到文档中的对应位置。
+- 双击批注正文可以编辑原批注，确认后直接写回 Markdown 源文件。
+- 锚定原文和批注正文都会做基础 Markdown 渲染。
+- `回复` 会在当前线性线程末尾追加新的 `{>>...<<}` block。
+- `关闭` 会把线程写为 `status=closed`，但保留 Markdown 批注证据。
+- closed 批注默认折叠。可以用 `展开` 查看，用 `打开` 恢复为 open 状态。
+- `Delete` / `删除` 是独立的破坏性操作。第一次点击会把按钮切换为 `确认删除`；第二次点击才会移除批注标记并还原锚定文本。
 
-## AI integration
+## Agent 集成
 
-Pass the `.md` file directly to Claude Code or another LLM with a prompt like:
+可以把 `.md` 文件直接交给 Claude Code 或其他 LLM，并使用类似提示：
 
-> Apply the edits described in the review comments (`{<<...>>}{>>...<<}`) in this file. Remove the review markup once each comment has been applied, and restore the anchored spans to plain text.
+> 请应用本文件中 review comments（`{...}{>>...<<}` 和 `{}{>>...<<}`）描述的修改。旧 `{<<...>>}{>>...<<}` 批注只作为兼容格式读取。每条批注处理完成后移除对应批注标记，并把锚定文本还原为普通文本。
 
-This closes the loop: comment in Obsidian → hand off to an LLM → get a clean diff back.
+这样可以闭合流程：在 Obsidian 中批注 -> 交给 LLM 处理 -> 得到干净 diff。
 
-## Development
+## 开发
 
 ```bash
 npm run dev   # watch mode
@@ -102,4 +106,4 @@ npm test      # parser and source-editing regression tests
 
 [AGPL-3.0-or-later](./LICENSE).
 
-Any modified version that you distribute, **or expose over a network**, must be made available under the same license. If that's a constraint for your use case, please open an issue before integrating this plugin into a closed product.
+如果你分发修改版本，或通过网络暴露修改版本，必须按同一许可证开放源代码。如果这会影响你的使用场景，请在把插件集成到闭源产品前先开 issue 讨论。
