@@ -4,7 +4,6 @@ export type CommentStatusFilter = "all" | CommentStatus;
 
 export const COMMENT_FORMAT = {
   defaultSyntax: "shift-anchor" as CommentSyntax,
-  replyAnchor: "",
   defaultType: "NOTE",
   metadataKeys: {
     id: "id",
@@ -25,6 +24,16 @@ export interface ParsedMeta {
   attrs: Record<string, string>;
 }
 
+export interface ParsedCommentEntry {
+  metaSource: string;
+  meta: ParsedMeta;
+  offset: number;
+  end: number;
+  full: string;
+  metaStart: number;
+  index: number;
+}
+
 export interface ParsedComment {
   anchor: string;
   metaSource: string;
@@ -36,6 +45,7 @@ export interface ParsedComment {
   anchorStart: number;
   anchorEnd: number;
   metaStart: number;
+  entries: ParsedCommentEntry[];
 }
 
 export interface CommentFilters {
@@ -50,10 +60,13 @@ export interface CommentSummary {
   byType: Record<string, number>;
 }
 
-interface ParsedCommentMatch {
+interface AnchorMatch {
   anchor: string;
-  metaSource: string;
   syntax: CommentSyntax;
+  offset: number;
+  anchorStart: number;
+  anchorEnd: number;
+  closeEnd: number;
 }
 
 interface Range {
@@ -61,8 +74,9 @@ interface Range {
   end: number;
 }
 
-export const COMMENT_REGEX =
-  /\{(?:==([\s\S]+?)==|=#([\s\S]+?)#=|<<([\s\S]*?)>>)\}\{>>([\s\S]+?)<<\}/g;
+const ANCHOR_REGEX = /\{(?:==([\s\S]+?)==|=#([\s\S]+?)#=|<<([\s\S]*?)>>)\}/g;
+const META_OPEN = "{>>";
+const META_CLOSE = "<<}";
 
 export function containsCommentMarkup(text: string): boolean {
   return (
@@ -87,7 +101,7 @@ export function getAnchorDelimiters(
 
 export function parseMeta(meta: string): ParsedMeta {
   const modern = meta.match(
-    /^([^|]+)\|([^|]+)\|([^|:]+)((?:\|[^|:]+=[^|:]*)*):\s*([\s\S]*)$/
+    /^([^|]+)\|([^|]*)\|([^|:]+)((?:\|[^|:]+=[^|:]*)*):\s*([\s\S]*)$/
   );
   if (modern) {
     const attrs = parseAttributes(modern[4]);
@@ -135,6 +149,8 @@ export function parseMeta(meta: string): ParsedMeta {
 }
 
 export function serializeMeta(meta: ParsedMeta): string {
+  if (isMinimalDraftMeta(meta)) return meta.body || "";
+
   const attrs: Record<string, string> = { ...meta.attrs };
   if (meta.id) attrs[COMMENT_FORMAT.metadataKeys.id] = meta.id;
   attrs[COMMENT_FORMAT.metadataKeys.status] = meta.status || "open";
@@ -155,47 +171,55 @@ export function serializeMeta(meta: ParsedMeta): string {
   return `${parts.join("|")}: ${meta.body || ""}`;
 }
 
+export function formatMetaEntry(meta: ParsedMeta): string {
+  return `${META_OPEN}${serializeMeta(meta)}${META_CLOSE}`;
+}
+
 export function formatComment(
   anchor: string,
   meta: ParsedMeta,
   syntax: CommentSyntax = COMMENT_FORMAT.defaultSyntax
 ): string {
   const delimiters = getAnchorDelimiters(syntax);
-  return `${delimiters.open}${anchor}${delimiters.close}{>>${serializeMeta(
+  return `${delimiters.open}${anchor}${delimiters.close}${formatMetaEntry(
     meta
-  )}<<}`;
+  )}`;
 }
 
 export function findComments(text: string): ParsedComment[] {
   if (!containsCommentMarkup(text)) return [];
 
   const codeRanges = getFencedCodeRanges(text);
-  const regex = new RegExp(COMMENT_REGEX);
+  const regex = new RegExp(ANCHOR_REGEX);
   const comments: ParsedComment[] = [];
   let match: RegExpExecArray | null;
 
   while ((match = regex.exec(text))) {
     if (isInsideRange(match.index, codeRanges)) continue;
 
-    const parsed = parseCommentMatch(match);
-    const delimiters = getAnchorDelimiters(parsed.syntax);
-    const anchorStart = match.index + delimiters.open.length;
-    const anchorEnd = anchorStart + parsed.anchor.length;
-    const metaStart = anchorEnd + delimiters.close.length;
-    const end = match.index + match[0].length;
+    const anchorMatch = parseAnchorMatch(match);
+    const entries = collectMetaEntries(text, anchorMatch.closeEnd, codeRanges);
+    if (entries.length === 0) continue;
+
+    const end = entries[entries.length - 1].end;
+    const full = text.slice(anchorMatch.offset, end);
+    const [firstEntry] = entries;
 
     comments.push({
-      anchor: parsed.anchor,
-      metaSource: parsed.metaSource,
-      meta: parseMeta(parsed.metaSource),
-      syntax: parsed.syntax,
-      offset: match.index,
+      anchor: anchorMatch.anchor,
+      metaSource: firstEntry.metaSource,
+      meta: firstEntry.meta,
+      syntax: anchorMatch.syntax,
+      offset: anchorMatch.offset,
       end,
-      full: match[0],
-      anchorStart,
-      anchorEnd,
-      metaStart,
+      full,
+      anchorStart: anchorMatch.anchorStart,
+      anchorEnd: anchorMatch.anchorEnd,
+      metaStart: firstEntry.offset,
+      entries,
     });
+
+    regex.lastIndex = end;
   }
 
   return comments;
@@ -204,15 +228,17 @@ export function findComments(text: string): ParsedComment[] {
 export function summarizeComments(comments: ParsedComment[]): CommentSummary {
   return comments.reduce<CommentSummary>(
     (summary, comment) => {
-      summary.total += 1;
-      if (comment.meta.status === "closed") {
-        summary.closed += 1;
-      } else {
-        summary.open += 1;
-      }
+      summary.total += comment.entries.length;
+      for (const entry of comment.entries) {
+        if (entry.meta.status === "closed") {
+          summary.closed += 1;
+        } else {
+          summary.open += 1;
+        }
 
-      const type = comment.meta.type || COMMENT_FORMAT.defaultType;
-      summary.byType[type] = (summary.byType[type] || 0) + 1;
+        const type = entry.meta.type || COMMENT_FORMAT.defaultType;
+        summary.byType[type] = (summary.byType[type] || 0) + 1;
+      }
       return summary;
     },
     { total: 0, open: 0, closed: 0, byType: {} }
@@ -223,13 +249,23 @@ export function filterComments(
   comments: ParsedComment[],
   filters: CommentFilters
 ): ParsedComment[] {
-  return comments.filter((comment) => {
-    const statusMatches =
-      filters.status === "all" || comment.meta.status === filters.status;
-    const typeMatches =
-      filters.type === "all" || comment.meta.type === filters.type;
-    return statusMatches && typeMatches;
-  });
+  return comments
+    .map((comment) => ({
+      ...comment,
+      entries: comment.entries.filter((entry) => {
+        const statusMatches =
+          filters.status === "all" || entry.meta.status === filters.status;
+        const typeMatches =
+          filters.type === "all" || entry.meta.type === filters.type;
+        return statusMatches && typeMatches;
+      }),
+    }))
+    .filter((comment) => comment.entries.length > 0)
+    .map((comment) => ({
+      ...comment,
+      metaSource: comment.entries[0].metaSource,
+      meta: comment.entries[0].meta,
+    }));
 }
 
 export function replaceCommentStatus(
@@ -249,45 +285,15 @@ export function replaceCommentThreadStatus(
   status: CommentStatus
 ): string {
   assertCommentSlice(text, comment);
-
-  const comments = findComments(text);
-  const targetIds = new Set<string>();
-  if (comment.meta.id) targetIds.add(comment.meta.id);
-
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const candidate of comments) {
-      if (
-        candidate.meta.replyTo &&
-        targetIds.has(candidate.meta.replyTo) &&
-        candidate.meta.id &&
-        !targetIds.has(candidate.meta.id)
-      ) {
-        targetIds.add(candidate.meta.id);
-        changed = true;
-      }
-    }
-  }
-
-  const affected = comments.filter((candidate) => {
-    if (candidate.offset === comment.offset && candidate.full === comment.full) {
-      return true;
-    }
-    return Boolean(candidate.meta.id && targetIds.has(candidate.meta.id));
-  });
-
-  return affected
-    .sort((a, b) => b.offset - a.offset)
-    .reduce((next, candidate) => {
-      assertCommentSlice(next, candidate);
-      const replacement = formatComment(
-        candidate.anchor,
-        { ...candidate.meta, status },
-        candidate.syntax
-      );
-      return next.slice(0, candidate.offset) + replacement + next.slice(candidate.end);
-    }, text);
+  const entries = getAllThreadEntries(comment);
+  return replaceCommentEntries(
+    text,
+    comment,
+    entries.map((entry) => ({
+      ...entry.meta,
+      status,
+    }))
+  );
 }
 
 export function replaceCommentMeta(
@@ -296,8 +302,29 @@ export function replaceCommentMeta(
   meta: ParsedMeta
 ): string {
   assertCommentSlice(text, comment);
-  const next = formatComment(comment.anchor, meta, comment.syntax);
-  return text.slice(0, comment.offset) + next + text.slice(comment.end);
+  const entries = getAllThreadEntries(comment);
+  const metas = entries.map((entry, index) =>
+    index === 0 ? meta : entry.meta
+  );
+  return replaceCommentEntries(text, comment, metas);
+}
+
+export function replaceCommentEntryMeta(
+  text: string,
+  comment: ParsedComment,
+  entryIndex: number,
+  meta: ParsedMeta
+): string {
+  assertCommentSlice(text, comment);
+  const entries = getAllThreadEntries(comment);
+  if (entryIndex < 0 || entryIndex >= entries.length) {
+    throw new Error("Comment entry not found; refresh comments before editing.");
+  }
+
+  const metas = entries.map((entry, index) =>
+    index === entryIndex ? meta : entry.meta
+  );
+  return replaceCommentEntries(text, comment, metas);
 }
 
 export function appendReplyComment(
@@ -306,12 +333,9 @@ export function appendReplyComment(
   reply: ParsedMeta
 ): string {
   assertCommentSlice(text, comment);
-  const replyMarkup = formatComment(
-    COMMENT_FORMAT.replyAnchor,
-    reply,
-    COMMENT_FORMAT.defaultSyntax
+  return (
+    text.slice(0, comment.end) + formatMetaEntry(reply) + text.slice(comment.end)
   );
-  return text.slice(0, comment.end) + " " + replyMarkup + text.slice(comment.end);
 }
 
 export function removeComment(text: string, comment: ParsedComment): string {
@@ -330,19 +354,74 @@ export function generateCommentId(date: Date = new Date()): string {
   return `RC-${y}${m}${d}-${hh}${mm}${ss}-${suffix}`;
 }
 
-function parseCommentMatch(match: RegExpExecArray): ParsedCommentMatch {
+function parseAnchorMatch(match: RegExpExecArray): AnchorMatch {
   const syntax =
     match[1] !== undefined
       ? "critic"
       : match[2] !== undefined
         ? "hash-anchor"
         : "shift-anchor";
+  const anchor = match[1] ?? match[2] ?? match[3] ?? "";
+  const delimiters = getAnchorDelimiters(syntax);
+  const anchorStart = match.index + delimiters.open.length;
+  const anchorEnd = anchorStart + anchor.length;
 
   return {
-    anchor: match[1] ?? match[2] ?? match[3] ?? "",
-    metaSource: match[4] ?? "",
+    anchor,
     syntax,
+    offset: match.index,
+    anchorStart,
+    anchorEnd,
+    closeEnd: match.index + match[0].length,
   };
+}
+
+function collectMetaEntries(
+  text: string,
+  start: number,
+  codeRanges: Range[]
+): ParsedCommentEntry[] {
+  const entries: ParsedCommentEntry[] = [];
+  let cursor = start;
+
+  while (text.startsWith(META_OPEN, cursor)) {
+    if (isInsideRange(cursor, codeRanges)) break;
+    const metaStart = cursor + META_OPEN.length;
+    const close = text.indexOf(META_CLOSE, metaStart);
+    if (close === -1) break;
+
+    const end = close + META_CLOSE.length;
+    const metaSource = text.slice(metaStart, close);
+    entries.push({
+      metaSource,
+      meta: parseMeta(metaSource),
+      offset: cursor,
+      end,
+      full: text.slice(cursor, end),
+      metaStart,
+      index: entries.length,
+    });
+    cursor = end;
+  }
+
+  return entries;
+}
+
+function replaceCommentEntries(
+  text: string,
+  comment: ParsedComment,
+  metas: ParsedMeta[]
+): string {
+  const delimiters = getAnchorDelimiters(comment.syntax);
+  const next =
+    `${delimiters.open}${comment.anchor}${delimiters.close}` +
+    metas.map((meta) => formatMetaEntry(meta)).join("");
+  return text.slice(0, comment.offset) + next + text.slice(comment.end);
+}
+
+function getAllThreadEntries(comment: ParsedComment): ParsedCommentEntry[] {
+  const reparsed = findComments(comment.full)[0];
+  return reparsed?.entries ?? comment.entries;
 }
 
 function parseAttributes(attrsSource: string): Record<string, string> {
@@ -356,6 +435,18 @@ function parseAttributes(attrsSource: string): Record<string, string> {
     if (key) attrs[key] = value;
   }
   return attrs;
+}
+
+function isMinimalDraftMeta(meta: ParsedMeta): boolean {
+  return (
+    !meta.author &&
+    !meta.date &&
+    !meta.id &&
+    !meta.replyTo &&
+    meta.type === COMMENT_FORMAT.defaultType &&
+    meta.status === "open" &&
+    Object.keys(meta.attrs).length === 0
+  );
 }
 
 function orderedAttributeKeys(attrs: Record<string, string>): string[] {

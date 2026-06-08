@@ -22,6 +22,7 @@ import {
 import { RangeSetBuilder } from "@codemirror/state";
 import {
   ParsedComment,
+  ParsedCommentEntry,
   ParsedMeta,
   appendReplyComment,
   containsCommentMarkup,
@@ -30,7 +31,7 @@ import {
   formatComment,
   generateCommentId,
   removeComment,
-  replaceCommentMeta,
+  replaceCommentEntryMeta,
   replaceCommentThreadStatus,
   summarizeComments,
   CommentStatusFilter,
@@ -429,7 +430,7 @@ export default class ReviewCommentsPlugin extends Plugin {
         span.textContent = comment.anchor;
         span.setAttribute(
           "title",
-          `${TYPE_ICON[meta.type] || ""} ${meta.author} | ${meta.date}\n${meta.body}`
+          formatThreadTitle(comment.entries)
         );
         frag.appendChild(span);
         lastIndex = comment.end;
@@ -501,7 +502,7 @@ function createCommentDecorationExtension(
           const metaStart = comment.metaStart;
           const end = comment.end;
           const meta = comment.meta;
-          const title = `${TYPE_ICON[meta.type] || ""} ${meta.author} | ${meta.date}\n${meta.body}`;
+          const title = formatThreadTitle(comment.entries);
           const expanded = !foldMarkup || selectionTouchesComment(view, start, end);
 
           if (!expanded) {
@@ -645,7 +646,7 @@ class CommentsView extends ItemView {
 
     if (matches.length === 0) {
       container.createEl("p", {
-        text: "还没有批注。选中文本后，在浮动工具条中选择批注类型。",
+        text: "还没有批注。选中文本后，通过右键菜单、命令面板、快捷键或浮动工具条添加批注。",
         cls: "review-comment-empty",
       });
       return;
@@ -677,74 +678,22 @@ class CommentsView extends ItemView {
       return;
     }
 
-    const { roots, childrenByParent } = this.buildVisibleThreads(visibleMatches);
-    const rendered = new Set<ParsedComment>();
-    for (const match of roots) {
-      await this.renderCommentCard(
-        container,
-        match,
-        mdView,
-        sourcePath,
-        childrenByParent,
-        rendered
-      );
-    }
     for (const match of visibleMatches) {
-      if (rendered.has(match)) continue;
-      await this.renderCommentCard(
-        container,
-        match,
-        mdView,
-        sourcePath,
-        childrenByParent,
-        rendered
-      );
+      await this.renderCommentCard(container, match, mdView, sourcePath);
     }
-  }
-
-  buildVisibleThreads(comments: ParsedComment[]): {
-    roots: ParsedComment[];
-    childrenByParent: Map<string, ParsedComment[]>;
-  } {
-    const visibleIds = new Set(
-      comments
-        .map((comment) => comment.meta.id)
-        .filter((id): id is string => Boolean(id))
-    );
-    const childComments = new Set<ParsedComment>();
-    const childrenByParent = new Map<string, ParsedComment[]>();
-
-    for (const comment of comments) {
-      const parentId = comment.meta.replyTo;
-      if (!parentId || !visibleIds.has(parentId)) continue;
-      const children = childrenByParent.get(parentId) ?? [];
-      children.push(comment);
-      childrenByParent.set(parentId, children);
-      childComments.add(comment);
-    }
-
-    return {
-      roots: comments.filter((comment) => !childComments.has(comment)),
-      childrenByParent,
-    };
   }
 
   async renderCommentCard(
     parent: HTMLElement,
     match: ParsedComment,
     mdView: MarkdownView,
-    sourcePath: string,
-    childrenByParent: Map<string, ParsedComment[]>,
-    rendered: Set<ParsedComment>
+    sourcePath: string
   ) {
-    if (rendered.has(match)) return;
-    rendered.add(match);
-
     const card = parent.createDiv({ cls: "review-comment-card" });
-    if (match.meta.replyTo) card.classList.add("is-reply");
+    const threadStatus = getThreadStatus(match);
     card.dataset.type = match.meta.type;
-    card.dataset.status = match.meta.status;
-    if (match.meta.status === "closed") {
+    card.dataset.status = threadStatus;
+    if (threadStatus === "closed") {
       card.classList.add("is-folded");
     }
 
@@ -752,12 +701,9 @@ class CommentsView extends ItemView {
     const icon = header.createSpan({ cls: "review-comment-card-icon" });
     icon.textContent = TYPE_ICON[match.meta.type] || "💬";
     const meta = header.createSpan({ cls: "review-comment-card-meta" });
-    meta.textContent = `${match.meta.author} · ${match.meta.date} · ${match.meta.type} · ${match.meta.status}`;
+    meta.textContent = `线程 · ${match.entries.length} 条 · ${threadStatus}`;
     if (match.meta.id) {
       meta.textContent += ` · ${match.meta.id}`;
-    }
-    if (match.meta.replyTo) {
-      meta.textContent += ` · 回复 ${match.meta.replyTo}`;
     }
 
     const content = card.createDiv({ cls: "review-comment-card-content" });
@@ -771,35 +717,14 @@ class CommentsView extends ItemView {
       });
     }
 
-    const body = content.createDiv({ cls: "review-comment-card-body" });
-    await this.renderMarkdownBlock(body, match.meta.body, sourcePath);
-    body.setAttribute("title", "双击编辑");
-    body.addEventListener("click", (e) => e.stopPropagation());
-    body.addEventListener("dblclick", (e) => {
-      e.stopPropagation();
-      this.openEditModal(mdView, match);
-    });
-
-    if (match.meta.id) {
-      const replies = childrenByParent.get(match.meta.id) ?? [];
-      if (replies.length > 0) {
-        const repliesEl = content.createDiv({ cls: "review-comment-replies" });
-        for (const reply of replies) {
-          await this.renderCommentCard(
-            repliesEl,
-            reply,
-            mdView,
-            sourcePath,
-            childrenByParent,
-            rendered
-          );
-        }
-      }
+    const threadEl = content.createDiv({ cls: "review-comment-thread" });
+    for (const entry of match.entries) {
+      await this.renderThreadEntry(threadEl, match, entry, mdView, sourcePath);
     }
 
     const actions = card.createDiv({ cls: "review-comment-card-actions" });
 
-    if (match.meta.status === "closed") {
+    if (threadStatus === "closed") {
       const expandBtn = actions.createEl("button", {
         text: "展开",
         cls: "review-comment-action-btn",
@@ -812,22 +737,17 @@ class CommentsView extends ItemView {
       });
     }
 
-      const replyBtn = actions.createEl("button", {
-        text: "回复",
-        cls: "review-comment-action-btn",
-      });
-      if (!match.meta.id) {
-        replyBtn.disabled = true;
-        replyBtn.title = "旧批注缺少 id，无法建立稳定回复关系";
-      }
-      replyBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        if (!match.meta.id) return;
-        this.openReplyModal(mdView, match);
-      });
+    const replyBtn = actions.createEl("button", {
+      text: "回复",
+      cls: "review-comment-action-btn",
+    });
+    replyBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.openReplyModal(mdView, match);
+    });
 
     const closeBtn = actions.createEl("button", {
-      text: match.meta.status === "closed" ? "打开" : "关闭",
+      text: threadStatus === "closed" ? "打开" : "关闭",
       cls: "review-comment-action-btn review-comment-close-btn",
     });
     closeBtn.addEventListener("click", (e) => {
@@ -835,7 +755,7 @@ class CommentsView extends ItemView {
       this.setCommentStatus(
         mdView,
         match,
-        match.meta.status === "closed" ? "open" : "closed"
+        threadStatus === "closed" ? "open" : "closed"
       );
     });
 
@@ -861,6 +781,37 @@ class CommentsView extends ItemView {
         return;
       }
       this.deleteComment(mdView, match);
+    });
+  }
+
+  async renderThreadEntry(
+    parent: HTMLElement,
+    thread: ParsedComment,
+    entry: ParsedCommentEntry,
+    mdView: MarkdownView,
+    sourcePath: string
+  ) {
+    const item = parent.createDiv({ cls: "review-comment-thread-entry" });
+    item.dataset.type = entry.meta.type;
+    item.dataset.status = entry.meta.status;
+
+    const header = item.createDiv({ cls: "review-comment-thread-entry-header" });
+    header.createSpan({
+      text: TYPE_ICON[entry.meta.type] || "💬",
+      cls: "review-comment-card-icon",
+    });
+    header.createSpan({
+      text: formatThreadEntryLabel(entry),
+      cls: "review-comment-card-meta",
+    });
+
+    const body = item.createDiv({ cls: "review-comment-card-body" });
+    await this.renderMarkdownBlock(body, entry.meta.body, sourcePath);
+    body.setAttribute("title", "双击编辑");
+    body.addEventListener("click", (e) => e.stopPropagation());
+    body.addEventListener("dblclick", (e) => {
+      e.stopPropagation();
+      this.openEditModal(mdView, thread, entry);
     });
   }
 
@@ -954,17 +905,21 @@ class CommentsView extends ItemView {
     }
   }
 
-  openEditModal(mdView: MarkdownView, match: ParsedComment) {
+  openEditModal(
+    mdView: MarkdownView,
+    match: ParsedComment,
+    entry: ParsedCommentEntry = match.entries[0]
+  ) {
     new CommentInputModal(
       this.plugin.app,
-      match.meta.type,
+      entry.meta.type,
       (body) => {
         const editor = mdView.editor;
         const value = editor.getValue();
         try {
           editor.setValue(
-            replaceCommentMeta(value, match, {
-              ...match.meta,
+            replaceCommentEntryMeta(value, match, entry.index, {
+              ...entry.meta,
               body: this.plugin.escapeCommentBody(body.trim()),
             })
           );
@@ -973,9 +928,9 @@ class CommentsView extends ItemView {
           new Notice(error instanceof Error ? error.message : "编辑批注失败");
         }
       },
-      `编辑批注${match.meta.id ? ` · ${match.meta.id}` : ""}`,
+      `编辑批注${entry.meta.id ? ` · ${entry.meta.id}` : ""}`,
       "保存修改",
-      match.meta.body
+      entry.meta.body
     ).open();
   }
 
@@ -995,7 +950,6 @@ class CommentsView extends ItemView {
           body: this.plugin.escapeCommentBody(body.trim() || "回复"),
           id: generateCommentId(),
           status: "open",
-          replyTo: match.meta.id,
           attrs: {},
         };
 
@@ -1010,6 +964,36 @@ class CommentsView extends ItemView {
       "回复"
     ).open();
   }
+}
+
+function getThreadStatus(thread: ParsedComment): ParsedMeta["status"] {
+  return thread.entries.some((entry) => entry.meta.status === "open")
+    ? "open"
+    : "closed";
+}
+
+function formatThreadTitle(entries: ParsedCommentEntry[]): string {
+  return entries
+    .map(
+      (entry) =>
+        `${entry.index + 1}. ${TYPE_ICON[entry.meta.type] || ""} ${formatThreadEntryLabel(
+          entry
+        )}\n${entry.meta.body}`
+    )
+    .join("\n\n");
+}
+
+function formatThreadEntryLabel(entry: ParsedCommentEntry): string {
+  const meta = entry.meta;
+  const parts = [
+    `#${entry.index + 1}`,
+    meta.author || "草稿",
+    meta.date,
+    meta.type || "NOTE",
+    meta.status,
+    meta.id,
+  ].filter((part): part is string => Boolean(part));
+  return parts.join(" · ");
 }
 
 class ReviewCommentsSettingTab extends PluginSettingTab {

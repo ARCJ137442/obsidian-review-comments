@@ -1,4 +1,5 @@
 node_modules/
+.codegraph/
 main.js
 *.js.map
 data.json

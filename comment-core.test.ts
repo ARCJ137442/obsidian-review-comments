@@ -6,6 +6,7 @@ import {
   formatComment,
   parseMeta,
   removeComment,
+  replaceCommentEntryMeta,
   replaceCommentMeta,
   replaceCommentStatus,
   replaceCommentThreadStatus,
@@ -14,17 +15,15 @@ import {
 
 describe("comment-core parsing", () => {
   it("parses the ExoNet shift-anchor format", () => {
-    // --- ARRANGE ---
     const source =
       "正文 {<<锚定文本>>}{>>Argon|2026-06-08|NOTE|id=RC-1|status=open: **批注**<<} 继续";
 
-    // --- ACT ---
     const comments = findComments(source);
 
-    // --- ASSERT ---
     expect(comments).toHaveLength(1);
     expect(comments[0].anchor).toBe("锚定文本");
     expect(comments[0].syntax).toBe("shift-anchor");
+    expect(comments[0].entries).toHaveLength(1);
     expect(comments[0].meta).toMatchObject({
       author: "Argon",
       date: "2026-06-08",
@@ -36,16 +35,13 @@ describe("comment-core parsing", () => {
   });
 
   it("keeps legacy and transitional formats readable", () => {
-    // --- ARRANGE ---
     const source = [
       "{==旧锚点==}{>>Argon|2026-06-08|EDIT: 旧批注<<}",
       "{=#过渡锚点#=}{>>Argon|2026-06-08|ASK: 过渡批注<<}",
     ].join("\n");
 
-    // --- ACT ---
     const comments = findComments(source);
 
-    // --- ASSERT ---
     expect(comments.map((comment) => comment.syntax)).toEqual([
       "critic",
       "hash-anchor",
@@ -56,106 +52,156 @@ describe("comment-core parsing", () => {
     ]);
   });
 
-  it("supports multiline anchors and multiline Markdown bodies", () => {
-    // --- ARRANGE ---
+  it("parses a linear thread as one anchor with multiple comment entries", () => {
     const source =
-      "{<<第一行\n- 第二行>>}{>>Argon|2026-06-08|NOTE|id=RC-2|status=open: 第一段\n- **第二段** `code`<<}";
+      "{<<传输函子>>}{>>Argon|2026-06-08|ASK|id=RC-A|status=open: 比较奇怪<<}{>>Argon|2026-06-08|NOTE|id=RC-B|status=open: 现在可以回复批注了<<}";
 
-    // --- ACT ---
-    const [comment] = findComments(source);
+    const [thread] = findComments(source);
 
-    // --- ASSERT ---
-    expect(comment.anchor).toBe("第一行\n- 第二行");
-    expect(comment.meta.body).toBe("第一段\n- **第二段** `code`");
+    expect(thread.anchor).toBe("传输函子");
+    expect(thread.entries).toHaveLength(2);
+    expect(thread.entries.map((entry) => entry.meta.body)).toEqual([
+      "比较奇怪",
+      "现在可以回复批注了",
+    ]);
+    expect(thread.entries[1].meta.replyTo).toBeUndefined();
+    expect(thread.full).toBe(source);
+  });
+
+  it("parses body-only human draft comments without requiring metadata ids", () => {
+    const source = "{<<原文>>}{>>批注<<}";
+
+    const [thread] = findComments(source);
+
+    expect(thread.anchor).toBe("原文");
+    expect(thread.entries).toHaveLength(1);
+    expect(thread.entries[0].meta).toMatchObject({
+      author: "",
+      date: "",
+      type: "NOTE",
+      status: "open",
+      body: "批注",
+    });
+    expect(thread.entries[0].meta.id).toBeUndefined();
+  });
+
+  it("parses long linear threads without splitting them into nested comments", () => {
+    const entries = Array.from({ length: 40 }, (_, index) => {
+      const n = String(index + 1).padStart(2, "0");
+      return `{>>Agent|2026-06-08|NOTE|id=RC-${n}|status=open: 第 ${n} 条回复<<}`;
+    }).join("");
+    const source = `{<<长线程锚点>>}${entries} 后文`;
+
+    const [thread] = findComments(source);
+
+    expect(thread.entries).toHaveLength(40);
+    expect(thread.entries[0].meta.id).toBe("RC-01");
+    expect(thread.entries[39].meta.body).toBe("第 40 条回复");
+    expect(source.slice(thread.end)).toBe(" 后文");
+  });
+
+  it("keeps adjacent anchored threads separate", () => {
+    const source =
+      "{<<甲>>}{>>A|2026-06-08|ASK|id=RC-A|status=open: 一<<}{>>B|2026-06-08|NOTE|id=RC-B|status=open: 二<<}{<<乙>>}{>>C|2026-06-08|NOTE|id=RC-C|status=open: 三<<}";
+
+    const comments = findComments(source);
+
+    expect(comments).toHaveLength(2);
+    expect(comments[0].anchor).toBe("甲");
+    expect(comments[0].entries).toHaveLength(2);
+    expect(comments[1].anchor).toBe("乙");
+    expect(comments[1].entries).toHaveLength(1);
+  });
+
+  it("supports multiline anchors and multiline Markdown bodies in every thread entry", () => {
+    const source = [
+      "{<<第一行",
+      "- 第二行>>}{>>Argon|2026-06-08|NOTE|id=RC-2|status=open: 第一段",
+      "- **第二段** `code`<<}{>>Codex|2026-06-08|NOTE|id=RC-3|status=open: 回复第一段",
+      "- 回复第二段<<}",
+    ].join("\n");
+
+    const [thread] = findComments(source);
+
+    expect(thread.anchor).toBe("第一行\n- 第二行");
+    expect(thread.entries[0].meta.body).toBe("第一段\n- **第二段** `code`");
+    expect(thread.entries[1].meta.body).toBe("回复第一段\n- 回复第二段");
   });
 
   it("does not parse review markup inside fenced code blocks", () => {
-    // --- ARRANGE ---
     const source = [
       "```md",
-      "{<<代码里的锚点>>}{>>Argon|2026-06-08|NOTE: 不应解析<<}",
+      "{<<代码里的锚点>>}{>>Argon|2026-06-08|NOTE: 不应解析<<}{>>Argon|2026-06-08|NOTE: 也不解析<<}",
       "```",
       "{<<正文锚点>>}{>>Argon|2026-06-08|NOTE: 应解析<<}",
     ].join("\n");
 
-    // --- ACT ---
     const comments = findComments(source);
 
-    // --- ASSERT ---
     expect(comments).toHaveLength(1);
     expect(comments[0].anchor).toBe("正文锚点");
   });
 
   it("parses comments in tables, blockquotes, and callouts", () => {
-    // --- ARRANGE ---
     const source = [
       "| A | B |",
       "| - | - |",
-      "| {<<表格锚点>>}{>>Argon|2026-06-08|NOTE: 表格批注<<} | x |",
+      "| {<<表格锚点>>}{>>Argon|2026-06-08|NOTE: 表格批注<<}{>>Codex|2026-06-08|NOTE: 表格回复<<} | x |",
       "> {<<引用锚点>>}{>>Argon|2026-06-08|NOTE: 引用批注<<}",
       "> [!note]",
       "> {<<callout锚点>>}{>>Argon|2026-06-08|NOTE: callout批注<<}",
     ].join("\n");
 
-    // --- ACT ---
     const comments = findComments(source);
 
-    // --- ASSERT ---
     expect(comments.map((comment) => comment.anchor)).toEqual([
       "表格锚点",
       "引用锚点",
       "callout锚点",
     ]);
+    expect(comments[0].entries).toHaveLength(2);
   });
 
   it("parses multiline comments inside Markdown lists", () => {
-    // --- ARRANGE ---
     const source = [
       "- 前置事项",
       "- {<<列表锚点第一行",
       "  列表锚点第二行>>}{>>Argon|2026-06-08|EDIT|id=RC-LIST|status=open: 第一段",
-      "  - 第二段<<}",
+      "  - 第二段<<}{>>Codex|2026-06-08|NOTE|id=RC-LIST-R|status=open: 线性回复",
+      "  - 回复第二段<<}",
       "- 后续事项",
     ].join("\n");
 
-    // --- ACT ---
-    const comments = findComments(source);
+    const [thread] = findComments(source);
 
-    // --- ASSERT ---
-    expect(comments).toHaveLength(1);
-    expect(comments[0].anchor).toBe("列表锚点第一行\n  列表锚点第二行");
-    expect(comments[0].meta.body).toBe("第一段\n  - 第二段");
-    expect(source.slice(comments[0].end)).toContain("- 后续事项");
+    expect(thread.anchor).toBe("列表锚点第一行\n  列表锚点第二行");
+    expect(thread.entries[0].meta.body).toBe("第一段\n  - 第二段");
+    expect(thread.entries[1].meta.body).toBe("线性回复\n  - 回复第二段");
+    expect(source.slice(thread.end)).toContain("- 后续事项");
   });
 
   it("does not parse review markup inside tilded fenced code blocks", () => {
-    // --- ARRANGE ---
     const source = [
       "~~~markdown",
       "{<<代码锚点>>}{>>Argon|2026-06-08|NOTE: 不应解析<<}",
       "~~~",
-      "{<<正文锚点>>}{>>Argon|2026-06-08|NOTE: 应解析<<}",
+      "{<<正文锚点>>}{>>Argon|2026-06-08|NOTE: 应解析<<}{>>Codex|2026-06-08|NOTE: 应解析回复<<}",
     ].join("\n");
 
-    // --- ACT ---
     const comments = findComments(source);
 
-    // --- ASSERT ---
     expect(comments).toHaveLength(1);
-    expect(comments[0].anchor).toBe("正文锚点");
+    expect(comments[0].entries).toHaveLength(2);
   });
 });
 
 describe("comment-core metadata", () => {
-  it("parses comment id, status, reply target, and custom types", () => {
-    // --- ARRANGE ---
+  it("parses comment id, status, legacy reply target, and custom types", () => {
     const meta =
       "Argon|2026-06-08|CLAIM_GAP|id=RC-3|status=closed|replyTo=RC-1: 需要补证据";
 
-    // --- ACT ---
     const parsed = parseMeta(meta);
 
-    // --- ASSERT ---
     expect(parsed).toMatchObject({
       author: "Argon",
       date: "2026-06-08",
@@ -168,13 +214,10 @@ describe("comment-core metadata", () => {
   });
 
   it("defaults older metadata to NOTE and open", () => {
-    // --- ARRANGE ---
     const meta = "Argon|2026-06-08: 老格式批注";
 
-    // --- ACT ---
     const parsed = parseMeta(meta);
 
-    // --- ASSERT ---
     expect(parsed).toMatchObject({
       author: "Argon",
       date: "2026-06-08",
@@ -186,16 +229,14 @@ describe("comment-core metadata", () => {
 });
 
 describe("comment-core summary and filtering", () => {
-  it("summarizes comments and filters them by status and type", () => {
-    // --- ARRANGE ---
+  it("summarizes thread entries and filters them by status and type", () => {
     const source = [
-      "{<<一>>}{>>Argon|2026-06-08|ASK|id=RC-F1|status=open: 提问<<}",
+      "{<<一>>}{>>Argon|2026-06-08|ASK|id=RC-F1|status=open: 提问<<}{>>Codex|2026-06-08|NOTE|id=RC-F1R|status=closed: 回复<<}",
       "{<<二>>}{>>Argon|2026-06-08|NOTE|id=RC-F2|status=closed: 备注<<}",
       "{<<三>>}{>>Argon|2026-06-08|NOTE|id=RC-F3|status=open: 另一条备注<<}",
     ].join("\n");
     const comments = findComments(source);
 
-    // --- ACT ---
     const summary = summarizeComments(comments);
     const openNotes = filterComments(comments, {
       status: "open",
@@ -206,24 +247,25 @@ describe("comment-core summary and filtering", () => {
       type: "all",
     });
 
-    // --- ASSERT ---
     expect(summary).toEqual({
-      total: 3,
+      total: 4,
       open: 2,
-      closed: 1,
+      closed: 2,
       byType: {
         ASK: 1,
-        NOTE: 2,
+        NOTE: 3,
       },
     });
     expect(openNotes.map((comment) => comment.anchor)).toEqual(["三"]);
-    expect(closedComments.map((comment) => comment.anchor)).toEqual(["二"]);
+    expect(closedComments.map((comment) => comment.anchor)).toEqual(["一", "二"]);
+    expect(closedComments[0].entries.map((entry) => entry.meta.body)).toEqual([
+      "回复",
+    ]);
   });
 });
 
 describe("comment-core editing", () => {
   it("formats new comments with id and open status", () => {
-    // --- ARRANGE ---
     const meta = {
       author: "Argon",
       date: "2026-06-08",
@@ -234,173 +276,238 @@ describe("comment-core editing", () => {
       attrs: {},
     };
 
-    // --- ACT ---
     const markup = formatComment("锚点", meta);
 
-    // --- ASSERT ---
     expect(markup).toBe(
       "{<<锚点>>}{>>Argon|2026-06-08|NOTE|id=RC-4|status=open: 正文<<}"
     );
   });
 
-  it("closes a comment without deleting the source evidence", () => {
-    // --- ARRANGE ---
-    const source =
-      "前 {<<锚点>>}{>>Argon|2026-06-08|NOTE|id=RC-5|status=open: 批注<<} 后";
-    const [comment] = findComments(source);
+  it("formats body-only human drafts without forcing metadata", () => {
+    const markup = formatComment("原文", {
+      author: "",
+      date: "",
+      type: "NOTE",
+      body: "批注",
+      status: "open",
+      attrs: {},
+    });
 
-    // --- ACT ---
-    const next = replaceCommentStatus(source, comment, "closed");
-
-    // --- ASSERT ---
-    expect(next).toContain("status=closed");
-    expect(next).toContain("批注");
-    expect(findComments(next)[0].meta.status).toBe("closed");
+    expect(markup).toBe("{<<原文>>}{>>批注<<}");
   });
 
-  it("closes a comment thread including reply comments", () => {
-    // --- ARRANGE ---
+  it("closes a single first entry without deleting the source evidence", () => {
+    const source =
+      "前 {<<锚点>>}{>>Argon|2026-06-08|NOTE|id=RC-5|status=open: 批注<<}{>>Codex|2026-06-08|NOTE|id=RC-5R|status=open: 回复<<} 后";
+    const [thread] = findComments(source);
+
+    const next = replaceCommentStatus(source, thread, "closed");
+
+    const [updated] = findComments(next);
+    expect(updated.entries.map((entry) => entry.meta.status)).toEqual([
+      "closed",
+      "open",
+    ]);
+    expect(next).toContain("批注");
+  });
+
+  it("closes an entire linear thread", () => {
     const source = [
       "{<<锚点>>}{>>Argon|2026-06-08|ASK|id=RC-11|status=open: 为什么？<<}",
-      "{<<锚点>>}{>>Codex|2026-06-08|NOTE|id=RC-12|status=open|replyTo=RC-11: 因为需要定义。<<}",
-      "{<<别处>>}{>>Argon|2026-06-08|NOTE|id=RC-13|status=open: 不相关<<}",
-    ].join(" ");
-    const [parent] = findComments(source);
+      "{>>Codex|2026-06-08|NOTE|id=RC-12|status=open: 因为需要定义。<<}",
+      "{>>Argon|2026-06-08|NOTE|id=RC-13|status=open: 那就补。<<}",
+      " {<<别处>>}{>>Argon|2026-06-08|NOTE|id=RC-14|status=open: 不相关<<}",
+    ].join("");
+    const [thread] = findComments(source);
 
-    // --- ACT ---
-    const next = replaceCommentThreadStatus(source, parent, "closed");
+    const next = replaceCommentThreadStatus(source, thread, "closed");
 
-    // --- ASSERT ---
     const comments = findComments(next);
-    expect(comments.map((comment) => comment.meta.status)).toEqual([
-      "closed",
-      "closed",
-      "open",
-    ]);
-  });
-
-  it("closes transitive reply chains", () => {
-    // --- ARRANGE ---
-    const source = [
-      "{<<锚点>>}{>>Argon|2026-06-08|ASK|id=RC-20|status=open: 为什么？<<}",
-      "{<<锚点>>}{>>Codex|2026-06-08|NOTE|id=RC-21|status=open|replyTo=RC-20: 第一层回复<<}",
-      "{<<锚点>>}{>>Argon|2026-06-08|NOTE|id=RC-22|status=open|replyTo=RC-21: 第二层回复<<}",
-    ].join(" ");
-    const [parent] = findComments(source);
-
-    // --- ACT ---
-    const next = replaceCommentThreadStatus(source, parent, "closed");
-
-    // --- ASSERT ---
-    expect(findComments(next).map((comment) => comment.meta.status)).toEqual([
+    expect(comments[0].entries.map((entry) => entry.meta.status)).toEqual([
       "closed",
       "closed",
       "closed",
     ]);
+    expect(comments[1].entries[0].meta.status).toBe("open");
   });
 
-  it("closes only the selected legacy comment when it has no id", () => {
-    // --- ARRANGE ---
-    const source = [
-      "{==旧锚点==}{>>Argon|2026-06-08: 旧批注<<}",
-      "{<<新锚点>>}{>>Argon|2026-06-08|NOTE|id=RC-23|status=open: 新批注<<}",
-    ].join(" ");
-    const [legacy] = findComments(source);
+  it("closes long threads without losing order", () => {
+    const entries = Array.from({ length: 25 }, (_, index) => {
+      return `{>>Agent|2026-06-08|NOTE|id=RC-L-${index}|status=open: 回复 ${index}<<}`;
+    }).join("");
+    const source = `{<<长线程>>}{>>Argon|2026-06-08|ASK|id=RC-L-root|status=open: 起点<<}${entries}`;
+    const [thread] = findComments(source);
 
-    // --- ACT ---
-    const next = replaceCommentThreadStatus(source, legacy, "closed");
+    const next = replaceCommentThreadStatus(source, thread, "closed");
 
-    // --- ASSERT ---
-    const comments = findComments(next);
-    expect(comments.map((comment) => comment.meta.status)).toEqual([
-      "closed",
-      "open",
+    const [updated] = findComments(next);
+    expect(updated.entries).toHaveLength(26);
+    expect(updated.entries.every((entry) => entry.meta.status === "closed")).toBe(
+      true
+    );
+    expect(updated.entries.map((entry) => entry.meta.body).slice(0, 3)).toEqual([
+      "起点",
+      "回复 0",
+      "回复 1",
     ]);
-    expect(comments[0].syntax).toBe("critic");
   });
 
-  it("edits a comment body while preserving anchor and lifecycle metadata", () => {
-    // --- ARRANGE ---
+  it("edits the first comment body while preserving anchor and the rest of the thread", () => {
     const source =
-      "{<<锚点>>}{>>Argon|2026-06-08|NOTE|id=RC-24|status=closed|replyTo=RC-20: 旧正文<<}";
-    const [comment] = findComments(source);
+      "{<<锚点>>}{>>Argon|2026-06-08|NOTE|id=RC-24|status=closed: 旧正文<<}{>>Codex|2026-06-08|NOTE|id=RC-25|status=open: 回复正文<<}";
+    const [thread] = findComments(source);
 
-    // --- ACT ---
-    const next = replaceCommentMeta(source, comment, {
-      ...comment.meta,
+    const next = replaceCommentMeta(source, thread, {
+      ...thread.meta,
       body: "新正文\n- 保留 Markdown",
     });
 
-    // --- ASSERT ---
     const [edited] = findComments(next);
     expect(edited.anchor).toBe("锚点");
-    expect(edited.meta).toMatchObject({
+    expect(edited.entries.map((entry) => entry.meta.body)).toEqual([
+      "新正文\n- 保留 Markdown",
+      "回复正文",
+    ]);
+    expect(edited.entries[0].meta).toMatchObject({
       id: "RC-24",
       status: "closed",
-      replyTo: "RC-20",
-      body: "新正文\n- 保留 Markdown",
     });
+  });
+
+  it("edits a minimal human draft while keeping it minimal", () => {
+    const source = "{<<原文>>}{>>旧批注<<}";
+    const [thread] = findComments(source);
+
+    const next = replaceCommentMeta(source, thread, {
+      ...thread.meta,
+      body: "新批注",
+    });
+
+    expect(next).toBe("{<<原文>>}{>>新批注<<}");
+  });
+
+  it("edits a later thread entry without changing sibling entries", () => {
+    const source =
+      "{<<锚点>>}{>>Argon|2026-06-08|ASK|id=RC-30|status=open: 第一条<<}{>>Codex|2026-06-08|NOTE|id=RC-31|status=open: 第二条<<}{>>Argon|2026-06-08|NOTE|id=RC-32|status=closed: 第三条<<}";
+    const [thread] = findComments(source);
+
+    const next = replaceCommentEntryMeta(source, thread, 1, {
+      ...thread.entries[1].meta,
+      body: "第二条已编辑",
+    });
+
+    expect(findComments(next)[0].entries.map((entry) => entry.meta.body)).toEqual([
+      "第一条",
+      "第二条已编辑",
+      "第三条",
+    ]);
   });
 
   it("refuses to edit stale comment slices", () => {
-    // --- ARRANGE ---
     const source = "{<<锚点>>}{>>Argon|2026-06-08|NOTE|id=RC-6|status=open: 批注<<}";
-    const [comment] = findComments(source);
+    const [thread] = findComments(source);
     const changed = source.replace("批注", "别人已经改了");
 
-    // --- ACT / ASSERT ---
-    expect(() => replaceCommentStatus(changed, comment, "closed")).toThrow(
+    expect(() => replaceCommentStatus(changed, thread, "closed")).toThrow(
       "Comment source changed"
     );
   });
 
-  it("appends a reply comment after the original comment", () => {
-    // --- ARRANGE ---
+  it("appends a reply as the next metadata entry in the same linear thread", () => {
     const source =
       "{<<锚点>>}{>>Argon|2026-06-08|ASK|id=RC-7|status=open: 为什么？<<}";
-    const [comment] = findComments(source);
+    const [thread] = findComments(source);
 
-    // --- ACT ---
-    const next = appendReplyComment(source, comment, {
+    const next = appendReplyComment(source, thread, {
       author: "GPT-5.5·Codex",
       date: "2026-06-08",
       type: "NOTE",
       body: "因为这里需要补定义。",
       id: "RC-8",
       status: "open",
-      replyTo: "RC-7",
       attrs: {},
     });
 
-    // --- ASSERT ---
-    const comments = findComments(next);
-    expect(comments).toHaveLength(2);
-    expect(comments[1].anchor).toBe("");
-    expect(comments[1].meta.replyTo).toBe("RC-7");
-    expect(comments[1].meta.body).toBe("因为这里需要补定义。");
+    expect(next).toBe(
+      "{<<锚点>>}{>>Argon|2026-06-08|ASK|id=RC-7|status=open: 为什么？<<}{>>GPT-5.5·Codex|2026-06-08|NOTE|id=RC-8|status=open: 因为这里需要补定义。<<}"
+    );
+    const [updated] = findComments(next);
+    expect(updated.entries).toHaveLength(2);
+    expect(updated.entries[1].meta.replyTo).toBeUndefined();
   });
 
-  it("removes comment markup only after preserving the anchor text", () => {
-    // --- ARRANGE ---
-    const source = "前 {<<锚点>>}{>>Argon|2026-06-08|NOTE|id=RC-9|status=closed: 已关闭<<} 后";
-    const [comment] = findComments(source);
+  it("appends an agent reply to a minimal human draft without needing replyTo", () => {
+    const source = "{<<原文>>}{>>人类批注<<}";
+    const [thread] = findComments(source);
 
-    // --- ACT ---
-    const next = removeComment(source, comment);
+    const next = appendReplyComment(source, thread, {
+      author: "GPT-5.5·Codex",
+      date: "2026-06-08",
+      type: "NOTE",
+      body: "Agent 回复",
+      id: "RC-AGENT",
+      status: "open",
+      attrs: {},
+    });
 
-    // --- ASSERT ---
+    expect(next).toBe(
+      "{<<原文>>}{>>人类批注<<}{>>GPT-5.5·Codex|2026-06-08|NOTE|id=RC-AGENT|status=open: Agent 回复<<}"
+    );
+    expect(findComments(next)[0].entries.map((entry) => entry.meta.body)).toEqual([
+      "人类批注",
+      "Agent 回复",
+    ]);
+  });
+
+  it("normalizes minimal drafts only when metadata is needed for status", () => {
+    const source = "{<<原文>>}{>>人类批注<<}";
+    const [thread] = findComments(source);
+
+    const next = replaceCommentThreadStatus(source, thread, "closed");
+
+    expect(next).toBe("{<<原文>>}{>>you||NOTE|status=closed: 人类批注<<}");
+    expect(findComments(next)[0].meta.status).toBe("closed");
+  });
+
+  it("appends replies after all existing entries, even for long threads", () => {
+    const source =
+      "{<<锚点>>}{>>A|2026-06-08|ASK|id=RC-A|status=open: 一<<}{>>B|2026-06-08|NOTE|id=RC-B|status=open: 二<<}";
+    const [thread] = findComments(source);
+
+    const next = appendReplyComment(source, thread, {
+      author: "C",
+      date: "2026-06-08",
+      type: "NOTE",
+      body: "三",
+      id: "RC-C",
+      status: "open",
+      attrs: {},
+    });
+
+    expect(findComments(next)[0].entries.map((entry) => entry.meta.id)).toEqual([
+      "RC-A",
+      "RC-B",
+      "RC-C",
+    ]);
+  });
+
+  it("removes an entire thread only after preserving the anchor text", () => {
+    const source =
+      "前 {<<锚点>>}{>>Argon|2026-06-08|NOTE|id=RC-9|status=closed: 已关闭<<}{>>Codex|2026-06-08|NOTE|id=RC-9R|status=open: 回复<<} 后";
+    const [thread] = findComments(source);
+
+    const next = removeComment(source, thread);
+
     expect(next).toBe("前 锚点 后");
     expect(findComments(next)).toHaveLength(0);
   });
 
   it("refuses to remove stale comment slices", () => {
-    // --- ARRANGE ---
     const source = "{<<锚点>>}{>>Argon|2026-06-08|NOTE|id=RC-10|status=open: 批注<<}";
-    const [comment] = findComments(source);
+    const [thread] = findComments(source);
     const changed = source.replace("批注", "被别处改动");
 
-    // --- ACT / ASSERT ---
-    expect(() => removeComment(changed, comment)).toThrow(
+    expect(() => removeComment(changed, thread)).toThrow(
       "Comment source changed"
     );
   });
