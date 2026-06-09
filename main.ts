@@ -20,7 +20,7 @@ import {
   ViewUpdate,
   WidgetType,
 } from "@codemirror/view";
-import { RangeSetBuilder } from "@codemirror/state";
+import { Range } from "@codemirror/state";
 import {
   ParsedComment,
   ParsedCommentEntry,
@@ -582,7 +582,7 @@ function createCommentDecorationExtension(
       }
 
       buildDecorations(view: EditorView): DecorationSet {
-        const builder = new RangeSetBuilder<Decoration>();
+        const ranges: Range<Decoration>[] = [];
         const text = view.state.doc.toString();
         const foldMarkup = shouldFoldMarkup() && !isPlainSourceMode(view);
         const highlightAnchors = shouldHighlightAnchors();
@@ -599,13 +599,14 @@ function createCommentDecorationExtension(
 
           if (!comment.anchor) {
             if (expanded) {
-              builder.add(
-                metaStart,
-                end,
-                Decoration.mark({ class: "review-comment-meta-live" })
+              ranges.push(
+                Decoration.mark({ class: "review-comment-meta-live" }).range(
+                  metaStart,
+                  end
+                )
               );
             } else {
-              addSafeReplace(builder, text, start, end, {
+              addSafeReplace(ranges, view, text, start, end, {
                 widget: new CommentPointWidget(title, meta.type),
               });
             }
@@ -613,33 +614,32 @@ function createCommentDecorationExtension(
           }
 
           if (!expanded) {
-            addSafeReplace(builder, text, start, highlightTextStart);
+            addSafeReplace(ranges, view, text, start, highlightTextStart);
           }
 
-          builder.add(
-            highlightTextStart,
-            highlightTextEnd,
+          ranges.push(
             Decoration.mark({
               class: `review-comment-highlight-live review-comment-folded-anchor${
                 highlightAnchors ? "" : " review-comment-anchor-muted"
               }`,
               attributes: { title, "data-type": meta.type },
-            })
+            }).range(highlightTextStart, highlightTextEnd)
           );
 
           if (expanded) {
-            builder.add(
-              metaStart,
-              end,
-              Decoration.mark({ class: "review-comment-meta-live" })
+            ranges.push(
+              Decoration.mark({ class: "review-comment-meta-live" }).range(
+                metaStart,
+                end
+              )
             );
           } else {
-            addSafeReplace(builder, text, highlightTextEnd, metaStart);
-            addSafeReplace(builder, text, metaStart, end);
+            addSafeReplace(ranges, view, text, highlightTextEnd, metaStart);
+            addSafeReplace(ranges, view, text, metaStart, end);
           }
         }
 
-        return builder.finish();
+        return Decoration.set(ranges, true);
       }
     },
     {
@@ -649,7 +649,8 @@ function createCommentDecorationExtension(
 }
 
 function addSafeReplace(
-  builder: RangeSetBuilder<Decoration>,
+  ranges: Range<Decoration>[],
+  view: EditorView,
   text: string,
   from: number,
   to: number,
@@ -661,23 +662,44 @@ function addSafeReplace(
   let pendingSpec = spec;
   for (let pos = from; pos < to; pos += 1) {
     if (text.charCodeAt(pos) !== 10) continue;
-    if (addInlineReplace(builder, segmentStart, pos, pendingSpec)) {
+    addHiddenLineDecoration(ranges, view, from, to, segmentStart, pos);
+    if (addInlineReplace(ranges, segmentStart, pos, pendingSpec)) {
       pendingSpec = withoutWidget(spec);
     }
     segmentStart = pos + 1;
   }
-  addInlineReplace(builder, segmentStart, to, pendingSpec);
+  addHiddenLineDecoration(ranges, view, from, to, segmentStart, to);
+  addInlineReplace(ranges, segmentStart, to, pendingSpec);
 }
 
 function addInlineReplace(
-  builder: RangeSetBuilder<Decoration>,
+  ranges: Range<Decoration>[],
   from: number,
   to: number,
   spec: Parameters<typeof Decoration.replace>[0]
 ): boolean {
   if (from >= to) return false;
-  builder.add(from, to, Decoration.replace(spec));
+  ranges.push(Decoration.replace(spec).range(from, to));
   return true;
+}
+
+function addHiddenLineDecoration(
+  ranges: Range<Decoration>[],
+  view: EditorView,
+  hiddenFrom: number,
+  hiddenTo: number,
+  segmentFrom: number,
+  segmentTo: number
+) {
+  if (segmentFrom >= segmentTo) return;
+  const line = view.state.doc.lineAt(segmentFrom);
+  if (segmentFrom !== line.from || segmentTo !== line.to) return;
+  if (hiddenFrom > line.from || hiddenTo < line.to) return;
+  ranges.push(
+    Decoration.line({ class: "review-comment-hidden-meta-line" }).range(
+      line.from
+    )
+  );
 }
 
 function withoutWidget(
