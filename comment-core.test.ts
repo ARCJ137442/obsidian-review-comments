@@ -202,6 +202,46 @@ describe("comment-core parsing", () => {
     expect(thread.entries[1].meta.body).toBe("回复第一段\n- 回复第二段");
   });
 
+  it("supports multiline anchors and multiline Markdown bodies in the preferred plain-anchor format", () => {
+    const source = [
+      "{第一行",
+      "第二行}{>>author=Argon;date=2026-06-09;type=ASK;id=RC-PLAIN-1: 第一段",
+      "",
+      "- 支持 Markdown 列表",
+      "- 支持长内容<<}{>>author=GPT-5.5·Codex;date=2026-06-09;type=NOTE;id=RC-PLAIN-2: 回复第一段",
+      "",
+      "> 支持引用块<<} 收尾",
+    ].join("\n");
+
+    const [thread] = findComments(source);
+
+    expect(thread.syntax).toBe("plain-anchor");
+    expect(thread.anchor).toBe("第一行\n第二行");
+    expect(thread.entries).toHaveLength(2);
+    expect(thread.entries[0].meta.body).toBe(
+      "第一段\n\n- 支持 Markdown 列表\n- 支持长内容"
+    );
+    expect(thread.entries[1].meta.body).toBe("回复第一段\n\n> 支持引用块");
+    expect(source.slice(thread.end)).toBe(" 收尾");
+  });
+
+  it("supports long multiline threads without losing entry order", () => {
+    const entries = Array.from({ length: 80 }, (_, index) => {
+      const n = String(index + 1).padStart(2, "0");
+      return `{>>author=Agent;date=2026-06-09;type=NOTE;id=RC-MULTI-${n}: 第 ${n} 条第一行\n第 ${n} 条第二行<<}`;
+    }).join("");
+    const source = `{长线程\n多行锚点}${entries} 后文`;
+
+    const [thread] = findComments(source);
+
+    expect(thread.anchor).toBe("长线程\n多行锚点");
+    expect(thread.entries).toHaveLength(80);
+    expect(thread.entries[0].meta.body).toBe("第 01 条第一行\n第 01 条第二行");
+    expect(thread.entries[79].meta.id).toBe("RC-MULTI-80");
+    expect(thread.entries[79].meta.body).toBe("第 80 条第一行\n第 80 条第二行");
+    expect(source.slice(thread.end)).toBe(" 后文");
+  });
+
   it("does not parse review markup inside fenced code blocks", () => {
     const source = [
       "```md",

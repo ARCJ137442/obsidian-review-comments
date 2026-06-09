@@ -605,19 +605,15 @@ function createCommentDecorationExtension(
                 Decoration.mark({ class: "review-comment-meta-live" })
               );
             } else {
-              builder.add(
-                start,
-                end,
-                Decoration.replace({
-                  widget: new CommentPointWidget(title, meta.type),
-                })
-              );
+              addSafeReplace(builder, text, start, end, {
+                widget: new CommentPointWidget(title, meta.type),
+              });
             }
             continue;
           }
 
           if (!expanded) {
-            builder.add(start, highlightTextStart, Decoration.replace({}));
+            addSafeReplace(builder, text, start, highlightTextStart);
           }
 
           builder.add(
@@ -638,8 +634,8 @@ function createCommentDecorationExtension(
               Decoration.mark({ class: "review-comment-meta-live" })
             );
           } else {
-            builder.add(highlightTextEnd, metaStart, Decoration.replace({}));
-            builder.add(metaStart, end, Decoration.replace({}));
+            addSafeReplace(builder, text, highlightTextEnd, metaStart);
+            addSafeReplace(builder, text, metaStart, end);
           }
         }
 
@@ -650,6 +646,46 @@ function createCommentDecorationExtension(
       decorations: (v) => v.decorations,
     }
   );
+}
+
+function addSafeReplace(
+  builder: RangeSetBuilder<Decoration>,
+  text: string,
+  from: number,
+  to: number,
+  spec: Parameters<typeof Decoration.replace>[0] = {}
+) {
+  if (from >= to) return;
+
+  let segmentStart = from;
+  let pendingSpec = spec;
+  for (let pos = from; pos < to; pos += 1) {
+    if (text.charCodeAt(pos) !== 10) continue;
+    if (addInlineReplace(builder, segmentStart, pos, pendingSpec)) {
+      pendingSpec = withoutWidget(spec);
+    }
+    segmentStart = pos + 1;
+  }
+  addInlineReplace(builder, segmentStart, to, pendingSpec);
+}
+
+function addInlineReplace(
+  builder: RangeSetBuilder<Decoration>,
+  from: number,
+  to: number,
+  spec: Parameters<typeof Decoration.replace>[0]
+): boolean {
+  if (from >= to) return false;
+  builder.add(from, to, Decoration.replace(spec));
+  return true;
+}
+
+function withoutWidget(
+  spec: Parameters<typeof Decoration.replace>[0]
+): Parameters<typeof Decoration.replace>[0] {
+  if (!("widget" in spec)) return spec;
+  const { widget: _widget, ...rest } = spec;
+  return rest;
 }
 
 class CommentsView extends ItemView {
