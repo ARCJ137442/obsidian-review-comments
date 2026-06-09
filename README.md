@@ -13,7 +13,7 @@
 单点批注：{}{>>author=shirai;date=2026-05-13;type=NOTE;id=RC-20260513-120100-WXYZ: 这里需要补充说明<<}
 ```
 
-- `{...}` 表示锚定原文。插件默认写入这种 plain-anchor 格式，避免 Obsidian 把 `{<<word>>}` 中的 `<word>` 误识别为类似 HTML 的标签。
+- `{...}` 表示锚定原文。本 fork 默认写入这种 plain-anchor 格式，避免 Obsidian 把 `{<<word>>}` 中的 `<word>` 误识别为类似 HTML 的标签。
 - `{}{>>...<<}` 表示没有选中文本的单点批注。裸 `{}` 或 `{}{}{}` 这类连续花括号只是普通文本，只有紧跟 `{>>...<<}` 时才会被识别为批注。
 - `{>>author=...;date=...;type=...;id=RC-...: 正文<<}` 表示完整批注元数据。元数据使用分号分隔的 key-value 形式，避免 `|` 破坏 Markdown 表格。内置 `type` 包括 `ASK`、`EDIT`、`PRAISE`、`NOTE`，自定义类型也会被解析并保留。
 - `{>>正文<<}` 是人类手写的最小草稿。手写时可以省略 author、date、type、id、status，插件和 Agent 工具后续可按需规范化。
@@ -94,7 +94,6 @@ ln -s "$(pwd)" "$VAULT/.obsidian/plugins/review-comments"
 
 这样可以闭合流程：在 Obsidian 中批注 -> 交给 LLM 处理 -> 得到干净 diff。
 
-仓库内置了一个配套 Agent skill：[`skills/obsidian-review-comments/`](./skills/obsidian-review-comments/)。它记录了插件的 Markdown 批注协议、兼容格式、单点批注、线性线程、关闭状态和 Agent 写入规则。Agent 只有在当前仓库是启用了 Review Comments 插件的 Obsidian vault，或用户明确要求处理 Review Comments / CriticMarkup 批注时，才应自动使用它。
 
 ## 开发
 
@@ -108,7 +107,7 @@ npm test      # parser and source-editing regression tests
 
 ## 变更记录
 
-- 2026-06-09：修复多行批注正文折叠。多行锚定文本继续跨行高亮 / 下划线；多行批注正文在 Live Preview 中折叠后不再残留空白行。验证：`npm test` 36/36 PASS，`npx tsc --noEmit` PASS，`npm run build` PASS，并已在测试 vault 中人工确认效果正常。
+- 2026-06-09：修复多行批注正文折叠。多行锚定文本继续跨行高亮 / 下划线；多行批注正文在 Live Preview 中折叠后不再残留空白行。验证：`npm test` 36/36 PASS，`npx tsc --noEmit` PASS，`npm run build` PASS，并已在 `ExoNet-Reticulum-rt44-migration` 测试 vault 中人工确认效果正常。
 
 ## License
 
