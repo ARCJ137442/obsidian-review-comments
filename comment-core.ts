@@ -7,9 +7,16 @@ export type CommentStatus = "open" | "closed";
 export type CommentStatusFilter = "all" | CommentStatus;
 export type CommentExportFormat = "simple" | "full";
 
+export const COMMENT_SYNTAXES: CommentSyntax[] = [
+  "plain-anchor",
+  "shift-anchor",
+  "critic",
+  "hash-anchor",
+];
+
 export const COMMENT_FORMAT = {
   defaultSyntax: "plain-anchor" as CommentSyntax,
-  defaultType: "NOTE",
+  defaultType: "COMMENT",
   metadataKeys: {
     id: "id",
     status: "status",
@@ -84,6 +91,10 @@ export interface CommentExportOptions {
   sourceText?: string;
 }
 
+export interface CommentParseOptions {
+  syntaxes?: CommentSyntax[];
+}
+
 interface AnchorMatch {
   anchor: string;
   syntax: CommentSyntax;
@@ -112,6 +123,26 @@ export function containsCommentMarkup(text: string): boolean {
     text.includes("{>>") ||
     text.includes("<<}")
   );
+}
+
+export function isCommentSyntax(value: unknown): value is CommentSyntax {
+  return (
+    typeof value === "string" &&
+    (COMMENT_SYNTAXES as string[]).includes(value)
+  );
+}
+
+export function normalizeCommentSyntaxes(
+  syntaxes: unknown,
+  requiredSyntaxes: CommentSyntax[] = []
+): CommentSyntax[] {
+  const result: CommentSyntax[] = [];
+  const source = Array.isArray(syntaxes) ? syntaxes : COMMENT_SYNTAXES;
+  for (const syntax of [...source, ...requiredSyntaxes]) {
+    if (!isCommentSyntax(syntax)) continue;
+    if (!result.includes(syntax)) result.push(syntax);
+  }
+  return result.length > 0 ? result : [...COMMENT_SYNTAXES];
 }
 
 export function getAnchorDelimiters(
@@ -218,15 +249,19 @@ export function formatComment(
   )}`;
 }
 
-export function findComments(text: string): ParsedComment[] {
+export function findComments(
+  text: string,
+  options: CommentParseOptions = {}
+): ParsedComment[] {
   if (!containsCommentMarkup(text)) return [];
 
   const codeRanges = getFencedCodeRanges(text);
+  const syntaxes = normalizeCommentSyntaxes(options.syntaxes);
   const comments: ParsedComment[] = [];
   let cursor = 0;
 
   while (cursor < text.length) {
-    const anchorMatch = findNextAnchor(text, cursor, codeRanges);
+    const anchorMatch = findNextAnchor(text, cursor, codeRanges, syntaxes);
     if (!anchorMatch) break;
     const entries = collectMetaEntries(text, anchorMatch.closeEnd, codeRanges);
     if (entries.length === 0) {
@@ -316,9 +351,12 @@ export function exportCommentsMarkdown(
   return lines.join("\n").trimEnd();
 }
 
-export function lintComments(text: string): CommentLintIssue[] {
+export function lintComments(
+  text: string,
+  options: CommentParseOptions = {}
+): CommentLintIssue[] {
   const codeRanges = getFencedCodeRanges(text);
-  const comments = findComments(text);
+  const comments = findComments(text, options);
   const issues: CommentLintIssue[] = [];
   const matchedMetaStarts = new Set<number>();
   const matchedMetaCloses = new Set<number>();
@@ -821,7 +859,8 @@ function parseSemicolonMeta(meta: string): ParsedMeta | null {
 function findNextAnchor(
   text: string,
   start: number,
-  codeRanges: Range[]
+  codeRanges: Range[],
+  syntaxes: CommentSyntax[]
 ): AnchorMatch | null {
   let cursor = start;
 
@@ -835,10 +874,12 @@ function findNextAnchor(
       continue;
     }
 
-    const legacy = parseLegacyAnchorAt(text, offset);
+    const legacy = parseLegacyAnchorAt(text, offset, syntaxes);
     if (legacy) return legacy;
 
-    const plain = parsePlainAnchorAt(text, offset);
+    const plain = syntaxes.includes("plain-anchor")
+      ? parsePlainAnchorAt(text, offset)
+      : null;
     if (plain) return plain;
 
     cursor = offset + 1;
@@ -847,7 +888,11 @@ function findNextAnchor(
   return null;
 }
 
-function parseLegacyAnchorAt(text: string, offset: number): AnchorMatch | null {
+function parseLegacyAnchorAt(
+  text: string,
+  offset: number,
+  syntaxes: CommentSyntax[]
+): AnchorMatch | null {
   const variants: { syntax: CommentSyntax; open: string; close: string }[] = [
     { syntax: "critic", open: "{==", close: "==}" },
     { syntax: "hash-anchor", open: "{=#", close: "#=}" },
@@ -855,6 +900,7 @@ function parseLegacyAnchorAt(text: string, offset: number): AnchorMatch | null {
   ];
 
   for (const variant of variants) {
+    if (!syntaxes.includes(variant.syntax)) continue;
     if (!text.startsWith(variant.open, offset)) continue;
     const anchorStart = offset + variant.open.length;
     const close = text.indexOf(variant.close, anchorStart);
@@ -874,6 +920,13 @@ function parseLegacyAnchorAt(text: string, offset: number): AnchorMatch | null {
 
 function parsePlainAnchorAt(text: string, offset: number): AnchorMatch | null {
   if (text.startsWith(META_OPEN, offset)) return null;
+  if (
+    text.startsWith("{==", offset) ||
+    text.startsWith("{=#", offset) ||
+    text.startsWith("{<<", offset)
+  ) {
+    return null;
+  }
   const anchorStart = offset + 1;
   const close = text.indexOf("}", anchorStart);
   if (close === -1) return null;

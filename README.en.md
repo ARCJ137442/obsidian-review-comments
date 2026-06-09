@@ -12,18 +12,19 @@ For human review or comment debates, the plugin can also copy the current file's
 ```markdown
 The original {text}{>>author=shirai;date=2026-05-13;type=EDIT;id=RC-20260513-120000-ABCD: please rewrite<<} has an issue.
 Minimal human draft: {text}{>>please rewrite<<}
-Point comment: {}{>>author=shirai;date=2026-05-13;type=NOTE;id=RC-20260513-120100-WXYZ: note<<}
+Point comment: {}{>>author=shirai;date=2026-05-13;type=COMMENT;id=RC-20260513-120100-WXYZ: note<<}
 ```
 
 - `{...}` — anchored source text. This fork writes this plain-anchor format by default because it avoids Obsidian treating `{<<word>>}` as an HTML-like tag.
 - `{}{>>...<<}` — point comment with no selected span. Bare `{}` or repeated braces such as `{}{}{}` are ordinary text unless immediately followed by a comment block.
-- `{>>author=...;date=...;type=...;id=RC-...: comment<<}` — full comment metadata. Semicolon-separated key-value metadata avoids `|` breaking Markdown tables. Known `type` values are `ASK`, `EDIT`, `PRAISE`, and `NOTE`; custom types are parsed and preserved.
+- `{>>author=...;date=...;type=...;id=RC-...: comment<<}` — full comment metadata. Semicolon-separated key-value metadata avoids `|` breaking Markdown tables. Built-in `type` values include the generic default `COMMENT` (shown as `批注` in the UI), plus `ASK`, `EDIT`, `PRAISE`, and `NOTE`; custom types are parsed and preserved.
 - `{>>comment<<}` — minimal human draft. Author, date, type, id, and status are optional when typing by hand; the plugin / LLM tooling can normalize them later.
 - `id=RC-...` is recommended for stable automation, but not required for human-readable comments. A thread can still be found by its anchored source text and surrounding context.
 - `status` is currently `open` or `closed`. Missing status means `open`, so new open comments normally omit `status=open`. Closing a comment writes `status=closed` and preserves the source evidence instead of deleting it.
 - Replies are stored as additional metadata blocks on the same anchored thread: `{anchor}{>>first<<}{>>second<<}`.
 - New replies do not need `replyTo`; each `{>>...<<}` after the first one is a linear reply to the previous comment in that thread.
 - Legacy `{<<...>>}{>>...<<}`, `{==...==}{>>...<<}`, and transitional `{=#...#=}{>>...<<}` comments are still parsed for backward compatibility, but new plugin writes use `{...}{>>...<<}`.
+- The settings tab separates `新建批注使用格式` from `兼容读取格式`: the first controls the syntax used for newly written comments, while the second controls which historical formats are parsed, folded, rendered, listed, and linted.
 - Heading comments are inserted as point comments below the heading so the comment markup does not become part of Obsidian's heading index.
 - Anchors and comment bodies may span multiple lines. The sidebar renders basic Markdown for both the anchored text and the comment body.
 
@@ -76,6 +77,8 @@ Alternatively:
 
 The floating toolbar can be disabled in plugin settings without affecting the right-click menu, commands, or hotkeys.
 
+The settings tab also includes `新建批注使用格式` and `兼容读取格式`. By default the plugin writes `{...}{>>...<<}` plain-anchor comments while remaining read-compatible with `{<<...>>}{>>...<<}`, `{==...==}{>>...<<}`, and `{=#...#=}{>>...<<}`. The active write syntax is always kept in the compatible read set.
+
 `检查当前文件批注` scans the current Markdown file for protocol issues and reports errors, warnings, and informational hints in a Notice plus modal. It currently covers duplicate `id`, legacy `replyTo`, orphan `{>>` / `<<}` markers, suspected comments inside fenced code blocks, bare `{}` / `{}{}{}` edge cases, range comments embedded in headings, multiline comments in line-sensitive Markdown structures, legacy pipe metadata inside tables, and minimal drafts without `id`.
 
 `复制当前文件批注清单` copies the current file's comment threads to the clipboard. The `复制批注清单格式` setting switches between `简单版` and `完整版`.
@@ -113,6 +116,7 @@ npm test      # parser and source-editing regression tests
 
 ## Changelog
 
+- 2026-06-09: Completed the first M4/M5 pass. Settings now separate `新建批注使用格式` from `兼容读取格式`; parser calls can be limited to configured syntaxes, and new range comments, point comments, and replies use the selected write syntax. Added the generic default `COMMENT / 批注` type with light gray `#dddddd`; new comments and replies default to it, while explicit legacy `NOTE` metadata remains preserved. Validation: `npm test` 52/52 PASS, `npx tsc --noEmit` PASS, `npm run build` PASS.
 - 2026-06-09: Added `复制当前文件批注清单` and the side-panel `复制清单` button. Supports simple and full Markdown export formats for review, debate, and audit workflows. Validation: `npm test` 47/47 PASS, `npx tsc --noEmit` PASS, `npm run build` PASS, deployed only `main.js`, `manifest.json`, and `styles.css` to the test vault without overwriting `data.json`.
 - 2026-06-09: Added the `检查当前文件批注` command for current-file comment protocol linting. Validation: `npm test` 43/43 PASS, `npx tsc --noEmit` PASS, `npm run build` PASS, deployed only `main.js`, `manifest.json`, and `styles.css` to the test vault without overwriting `data.json`.
 

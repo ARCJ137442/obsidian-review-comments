@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   appendReplyComment,
+  COMMENT_FORMAT,
   exportCommentsMarkdown,
   filterComments,
   findComments,
   formatComment,
   parseMeta,
   lintComments,
+  normalizeCommentSyntaxes,
   removeComment,
   replaceCommentEntryMeta,
   replaceCommentMeta,
@@ -154,7 +156,7 @@ describe("comment-core parsing", () => {
     expect(thread.entries[0].meta).toMatchObject({
       author: "",
       date: "",
-      type: "NOTE",
+      type: COMMENT_FORMAT.defaultType,
       status: "open",
       body: "批注",
     });
@@ -329,7 +331,7 @@ describe("comment-core metadata", () => {
     });
   });
 
-  it("defaults older metadata to NOTE and open", () => {
+  it("defaults older metadata to the generic comment type and open", () => {
     const meta = "Argon|2026-06-08: 老格式批注";
 
     const parsed = parseMeta(meta);
@@ -337,10 +339,86 @@ describe("comment-core metadata", () => {
     expect(parsed).toMatchObject({
       author: "Argon",
       date: "2026-06-08",
-      type: "NOTE",
+      type: COMMENT_FORMAT.defaultType,
       status: "open",
       body: "老格式批注",
     });
+  });
+
+  it("preserves explicit legacy NOTE metadata", () => {
+    const meta = "Argon|2026-06-08|NOTE: 老备注";
+
+    const parsed = parseMeta(meta);
+
+    expect(parsed.type).toBe("NOTE");
+    expect(parsed.body).toBe("老备注");
+  });
+});
+
+describe("comment-core syntax compatibility", () => {
+  it("parses all supported syntaxes by default", () => {
+    const source = [
+      "{plain}{>>p<<}",
+      "{<<shift>>}{>>s<<}",
+      "{==critic==}{>>c<<}",
+      "{=#hash#=}{>>h<<}",
+    ].join("\n");
+
+    const comments = findComments(source);
+
+    expect(comments.map((comment) => comment.syntax)).toEqual([
+      "plain-anchor",
+      "shift-anchor",
+      "critic",
+      "hash-anchor",
+    ]);
+    expect(comments.map((comment) => comment.anchor)).toEqual([
+      "plain",
+      "shift",
+      "critic",
+      "hash",
+    ]);
+  });
+
+  it("honors compatible syntax filters without treating disabled legacy syntax as plain anchors", () => {
+    const source = [
+      "{plain}{>>p<<}",
+      "{<<shift>>}{>>s<<}",
+      "{==critic==}{>>c<<}",
+      "{=#hash#=}{>>h<<}",
+    ].join("\n");
+
+    const plainOnly = findComments(source, { syntaxes: ["plain-anchor"] });
+    const shiftOnly = findComments(source, { syntaxes: ["shift-anchor"] });
+
+    expect(plainOnly.map((comment) => comment.anchor)).toEqual(["plain"]);
+    expect(shiftOnly.map((comment) => comment.anchor)).toEqual(["shift"]);
+  });
+
+  it("normalizes compatible syntaxes and keeps required write syntax", () => {
+    const syntaxes = normalizeCommentSyntaxes(
+      ["plain-anchor", "bogus", "plain-anchor"],
+      ["shift-anchor"]
+    );
+
+    expect(syntaxes).toEqual(["plain-anchor", "shift-anchor"]);
+  });
+
+  it("formats comments with a selected write syntax", () => {
+    const markup = formatComment(
+      "锚点",
+      {
+        author: "",
+        date: "",
+        type: COMMENT_FORMAT.defaultType,
+        body: "批注",
+        status: "open",
+        attrs: {},
+      },
+      "shift-anchor"
+    );
+
+    expect(markup).toBe("{<<锚点>>}{>>批注<<}");
   });
 });
 
@@ -600,7 +678,7 @@ describe("comment-core editing", () => {
     const markup = formatComment("原文", {
       author: "",
       date: "",
-      type: "NOTE",
+      type: COMMENT_FORMAT.defaultType,
       body: "批注",
       status: "open",
       attrs: {},
@@ -778,7 +856,9 @@ describe("comment-core editing", () => {
 
     const next = replaceCommentThreadStatus(source, thread, "closed");
 
-    expect(next).toBe("{<<原文>>}{>>author=you;type=NOTE;status=closed: 人类批注<<}");
+    expect(next).toBe(
+      "{<<原文>>}{>>author=you;type=COMMENT;status=closed: 人类批注<<}"
+    );
     expect(findComments(next)[0].meta.status).toBe("closed");
   });
 

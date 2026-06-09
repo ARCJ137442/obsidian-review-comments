@@ -22,9 +22,13 @@ import {
 } from "@codemirror/view";
 import { EditorState, Range, StateEffect, StateField } from "@codemirror/state";
 import {
+  COMMENT_FORMAT,
+  COMMENT_SYNTAXES,
   CommentExportFormat,
   CommentLintIssue,
+  CommentParseOptions,
   CommentStatusFilter,
+  CommentSyntax,
   ParsedComment,
   ParsedCommentEntry,
   ParsedMeta,
@@ -35,7 +39,9 @@ import {
   findComments,
   formatComment,
   generateCommentId,
+  isCommentSyntax,
   lintComments,
+  normalizeCommentSyntaxes,
   removeComment,
   replaceCommentEntryMeta,
   replaceCommentThreadStatus,
@@ -50,6 +56,8 @@ interface ReviewCommentsSettings {
   foldEditorMarkup: boolean;
   highlightAnchors: boolean;
   commentExportFormat: CommentExportFormat;
+  compatibleCommentSyntaxes: CommentSyntax[];
+  writeCommentSyntax: CommentSyntax;
 }
 
 const DEFAULT_SETTINGS: ReviewCommentsSettings = {
@@ -60,12 +68,41 @@ const DEFAULT_SETTINGS: ReviewCommentsSettings = {
   foldEditorMarkup: true,
   highlightAnchors: false,
   commentExportFormat: "simple",
+  compatibleCommentSyntaxes: [...COMMENT_SYNTAXES],
+  writeCommentSyntax: COMMENT_FORMAT.defaultSyntax,
 };
+
+const SYNTAX_LABELS: Record<CommentSyntax, string> = {
+  "plain-anchor": "当前格式：{...}{>>...<<}",
+  "shift-anchor": "旧 Shift 格式：{<<...>>}{>>...<<}",
+  critic: "CriticMarkup：{==...==}{>>...<<}",
+  "hash-anchor": "过渡格式：{=#...#=}{>>...<<}",
+};
+
+function normalizeSettings(
+  data: Partial<ReviewCommentsSettings> | null | undefined
+): ReviewCommentsSettings {
+  const loaded = data || {};
+  const writeCommentSyntax = isCommentSyntax(loaded.writeCommentSyntax)
+    ? loaded.writeCommentSyntax
+    : DEFAULT_SETTINGS.writeCommentSyntax;
+
+  return {
+    ...DEFAULT_SETTINGS,
+    ...loaded,
+    writeCommentSyntax,
+    compatibleCommentSyntaxes: normalizeCommentSyntaxes(
+      loaded.compatibleCommentSyntaxes,
+      [writeCommentSyntax]
+    ),
+  };
+}
 
 const VIEW_TYPE_COMMENTS = "review-comments-view";
 const setCommentDecorationMode = StateEffect.define<boolean>();
 
 const TYPES: { id: string; tag: string; label: string; icon: string }[] = [
+  { id: "comment", tag: "COMMENT", label: "批注", icon: "💬" },
   { id: "ask", tag: "ASK", label: "提问", icon: "❓" },
   { id: "edit", tag: "EDIT", label: "修改", icon: "✏️" },
   { id: "praise", tag: "PRAISE", label: "称赞", icon: "👍" },
@@ -105,7 +142,7 @@ class CommentInputModal extends Modal {
     super(app);
     this.typeTag = typeTag;
     this.onSubmit = onSubmit;
-    this.titleText = titleText || `添加${TYPE_LABEL[this.typeTag] || "备注"}批注`;
+    this.titleText = titleText || formatAddCommentTitle(this.typeTag);
     this.submitText = submitText || "添加批注";
     this.initialBody = initialBody || "";
   }
@@ -283,7 +320,8 @@ export default class ReviewCommentsPlugin extends Plugin {
     this.registerEditorExtension([
       createCommentDecorationExtension(
         () => this.settings.foldEditorMarkup,
-        () => this.settings.highlightAnchors
+        () => this.settings.highlightAnchors,
+        () => this.getParseOptions()
       ),
     ]);
 
@@ -311,18 +349,25 @@ export default class ReviewCommentsPlugin extends Plugin {
   }
 
   async loadSettings() {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    this.settings = normalizeSettings(await this.loadData());
   }
 
   async saveSettings() {
     await this.saveData(this.settings);
   }
 
+  getParseOptions(): CommentParseOptions {
+    return { syntaxes: this.settings.compatibleCommentSyntaxes };
+  }
+
   escapeCommentBody(body: string): string {
     return body.replace(/<<}/g, "<< }");
   }
 
-  addCommentToSelection(editor: Editor, typeTag: string = "NOTE") {
+  addCommentToSelection(
+    editor: Editor,
+    typeTag: string = COMMENT_FORMAT.defaultType
+  ) {
     const selection = editor.getSelection();
     if (containsCommentMarkup(selection)) {
       new Notice("选区中已经包含批注标记");
@@ -337,10 +382,10 @@ export default class ReviewCommentsPlugin extends Plugin {
       to
     );
     const title = headingContext
-      ? `添加${TYPE_LABEL[typeTag] || "备注"}标题批注`
+      ? formatAddCommentTitle(typeTag, "标题批注")
       : selection
         ? undefined
-        : `添加${TYPE_LABEL[typeTag] || "备注"}单点批注`;
+        : formatAddCommentTitle(typeTag, "单点批注");
 
     new CommentInputModal(this.app, typeTag, (body) => {
       const meta = this.createCommentMeta(typeTag, body);
@@ -352,9 +397,17 @@ export default class ReviewCommentsPlugin extends Plugin {
         };
         this.insertPointCommentAfterLine(editor, headingContext.line, meta);
       } else if (selection) {
-        editor.replaceRange(formatComment(selection, meta), from, to);
+        editor.replaceRange(
+          formatComment(selection, meta, this.settings.writeCommentSyntax),
+          from,
+          to
+        );
       } else {
-        editor.replaceRange(formatComment("", meta), from, to);
+        editor.replaceRange(
+          formatComment("", meta, this.settings.writeCommentSyntax),
+          from,
+          to
+        );
       }
       editor.focus();
     }, title).open();
@@ -391,7 +444,7 @@ export default class ReviewCommentsPlugin extends Plugin {
     line: number,
     meta: ParsedMeta
   ) {
-    const markup = formatComment("", meta);
+    const markup = formatComment("", meta, this.settings.writeCommentSyntax);
     const nextLine = line + 1;
     if (nextLine < editor.lineCount()) {
       editor.replaceRange(`${markup}\n`, { line: nextLine, ch: 0 });
@@ -405,7 +458,7 @@ export default class ReviewCommentsPlugin extends Plugin {
   }
 
   lintCurrentFileComments(editor: Editor) {
-    const issues = lintComments(editor.getValue());
+    const issues = lintComments(editor.getValue(), this.getParseOptions());
     const summary = countLintIssues(issues);
     if (issues.length === 0) {
       new Notice("批注检查完成：没有发现问题");
@@ -422,7 +475,7 @@ export default class ReviewCommentsPlugin extends Plugin {
     const resolvedPath =
       filePath || activeMarkdown?.file?.path || this.app.workspace.getActiveFile()?.path || "";
     const text = editor.getValue();
-    const comments = findComments(text);
+    const comments = findComments(text, this.getParseOptions());
     const markdown = exportCommentsMarkdown(comments, {
       format: this.settings.commentExportFormat,
       filePath: resolvedPath,
@@ -572,7 +625,7 @@ export default class ReviewCommentsPlugin extends Plugin {
     for (const tn of textNodes) {
       if (tn.parentElement?.closest("pre, code")) continue;
       const text = tn.textContent || "";
-      const comments = findComments(text);
+      const comments = findComments(text, this.getParseOptions());
       if (comments.length === 0) continue;
 
       let lastIndex = 0;
@@ -715,7 +768,8 @@ class CommentPointWidget extends WidgetType {
 
 function createCommentDecorationExtension(
   shouldFoldMarkup: () => boolean,
-  shouldHighlightAnchors: () => boolean
+  shouldHighlightAnchors: () => boolean,
+  getParseOptions: () => CommentParseOptions
 ) {
   // Cross-line comment bodies must be folded by directly provided StateField
   // decorations. ViewPlugin-provided replace decorations cannot replace line
@@ -731,7 +785,8 @@ function createCommentDecorationExtension(
           state,
           shouldFoldMarkup(),
           shouldHighlightAnchors(),
-          true
+          true,
+          getParseOptions()
         ),
         isLivePreview: true,
       };
@@ -756,7 +811,8 @@ function createCommentDecorationExtension(
           transaction.state,
           shouldFoldMarkup(),
           shouldHighlightAnchors(),
-          isLivePreview
+          isLivePreview,
+          getParseOptions()
         ),
         isLivePreview,
       };
@@ -794,13 +850,14 @@ function buildCommentDecorations(
   state: EditorState,
   shouldFoldMarkup: boolean,
   shouldHighlightAnchors: boolean,
-  isLivePreview: boolean
+  isLivePreview: boolean,
+  parseOptions: CommentParseOptions
 ): DecorationSet {
   const ranges: Range<Decoration>[] = [];
   const text = state.doc.toString();
   const foldMarkup = shouldFoldMarkup && isLivePreview;
 
-  for (const comment of findComments(text)) {
+  for (const comment of findComments(text, parseOptions)) {
     const start = comment.offset;
     const highlightTextStart = comment.anchorStart;
     const highlightTextEnd = comment.anchorEnd;
@@ -978,7 +1035,7 @@ class CommentsView extends ItemView {
 
     const sourcePath = mdView.file?.path ?? "";
     const text = mdView.editor.getValue();
-    const matches = findComments(text);
+    const matches = findComments(text, this.plugin.getParseOptions());
 
     if (matches.length === 0) {
       container.createEl("p", {
@@ -1300,7 +1357,7 @@ class CommentsView extends ItemView {
   openReplyModal(mdView: MarkdownView, match: ParsedComment) {
     new CommentInputModal(
       this.plugin.app,
-      "NOTE",
+      COMMENT_FORMAT.defaultType,
       (body) => {
         const editor = mdView.editor;
         const value = editor.getValue();
@@ -1309,7 +1366,7 @@ class CommentsView extends ItemView {
         const replyMeta: ParsedMeta = {
           author,
           date,
-          type: "NOTE",
+          type: COMMENT_FORMAT.defaultType,
           body: this.plugin.escapeCommentBody(body.trim() || "回复"),
           id: generateCommentId(),
           status: "open",
@@ -1431,11 +1488,17 @@ function formatThreadEntryLabel(entry: ParsedCommentEntry): string {
     `#${entry.index + 1}`,
     meta.author || "草稿",
     meta.date,
-    meta.type || "NOTE",
+    meta.type || COMMENT_FORMAT.defaultType,
     meta.status,
     meta.id,
   ].filter((part): part is string => Boolean(part));
   return parts.join(" · ");
+}
+
+function formatAddCommentTitle(typeTag: string, scopeLabel = "批注"): string {
+  const label = TYPE_LABEL[typeTag] || "批注";
+  if (label === "批注") return `添加${scopeLabel}`;
+  return `添加${label}${scopeLabel}`;
 }
 
 class ReviewCommentsSettingTab extends PluginSettingTab {
@@ -1489,6 +1552,69 @@ class ReviewCommentsSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           })
       );
+
+    new Setting(containerEl)
+      .setName("新建批注使用格式")
+      .setDesc("决定插件新建范围批注和单点批注时写入 Markdown 的锚点格式；修改设置不会自动迁移旧批注。")
+      .addDropdown((dd) => {
+        for (const syntax of COMMENT_SYNTAXES) {
+          dd.addOption(syntax, SYNTAX_LABELS[syntax]);
+        }
+        return dd
+          .setValue(this.plugin.settings.writeCommentSyntax)
+          .onChange(async (value: string) => {
+            if (!isCommentSyntax(value)) return;
+            this.plugin.settings.writeCommentSyntax = value;
+            this.plugin.settings.compatibleCommentSyntaxes =
+              normalizeCommentSyntaxes(
+                this.plugin.settings.compatibleCommentSyntaxes,
+                [value]
+              );
+            await this.plugin.saveSettings();
+            this.display();
+          });
+      });
+
+    containerEl.createEl("h3", { text: "兼容读取格式" });
+    containerEl.createEl("p", {
+      text: "启用后，对应格式会被编辑器折叠、阅读模式渲染、侧栏列出和批注检查识别。当前写入格式必须保持兼容读取。",
+      cls: "setting-item-description",
+    });
+
+    for (const syntax of COMMENT_SYNTAXES) {
+      new Setting(containerEl)
+        .setName(SYNTAX_LABELS[syntax])
+        .addToggle((toggle) =>
+          toggle
+            .setValue(
+              this.plugin.settings.compatibleCommentSyntaxes.includes(syntax)
+            )
+            .onChange(async (value) => {
+              const writeSyntax = this.plugin.settings.writeCommentSyntax;
+              if (!value && syntax === writeSyntax) {
+                new Notice("当前写入格式必须保持兼容读取");
+                this.plugin.settings.compatibleCommentSyntaxes =
+                  normalizeCommentSyntaxes(
+                    this.plugin.settings.compatibleCommentSyntaxes,
+                    [writeSyntax]
+                  );
+                await this.plugin.saveSettings();
+                this.display();
+                return;
+              }
+
+              const current =
+                this.plugin.settings.compatibleCommentSyntaxes.filter(
+                  (item) => item !== syntax
+                );
+              if (value) current.push(syntax);
+              this.plugin.settings.compatibleCommentSyntaxes =
+                normalizeCommentSyntaxes(current, [writeSyntax]);
+              await this.plugin.saveSettings();
+              this.display();
+            })
+        );
+    }
 
     new Setting(containerEl)
       .setName("右侧批注面板")
