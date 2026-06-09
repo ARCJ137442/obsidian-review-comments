@@ -111,10 +111,6 @@
   padding: 0 4px;
 }
 
-.cm-line.review-comment-hidden-meta-line {
-  display: none;
-}
-
 /* Side panel cards */
 .review-comment-filterbar {
   display: flex;
