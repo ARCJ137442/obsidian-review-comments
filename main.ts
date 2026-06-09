@@ -22,6 +22,8 @@ import {
 } from "@codemirror/view";
 import { EditorState, Range, StateEffect, StateField } from "@codemirror/state";
 import {
+  CommentLintIssue,
+  CommentStatusFilter,
   ParsedComment,
   ParsedCommentEntry,
   ParsedMeta,
@@ -31,11 +33,11 @@ import {
   findComments,
   formatComment,
   generateCommentId,
+  lintComments,
   removeComment,
   replaceCommentEntryMeta,
   replaceCommentThreadStatus,
   summarizeComments,
-  CommentStatusFilter,
 } from "./comment-core";
 
 interface ReviewCommentsSettings {
@@ -151,6 +153,59 @@ class CommentInputModal extends Modal {
   }
 }
 
+class CommentLintModal extends Modal {
+  constructor(
+    app: App,
+    private readonly issues: CommentLintIssue[]
+  ) {
+    super(app);
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass("review-comment-lint-modal");
+    this.setTitle("当前文件批注检查");
+
+    if (this.issues.length === 0) {
+      contentEl.createEl("p", {
+        text: "没有发现批注格式问题。",
+        cls: "review-comment-lint-empty",
+      });
+      return;
+    }
+
+    const summary = countLintIssues(this.issues);
+    contentEl.createEl("p", {
+      text: `发现 ${this.issues.length} 项：错误 ${summary.error} · 警告 ${summary.warning} · 提示 ${summary.info}`,
+      cls: "review-comment-lint-summary",
+    });
+
+    const list = contentEl.createEl("ol", {
+      cls: "review-comment-lint-list",
+    });
+    for (const issue of this.issues) {
+      const item = list.createEl("li", {
+        cls: `review-comment-lint-item is-${issue.severity}`,
+      });
+      item.createEl("div", {
+        text: `${formatLintSeverity(issue.severity)} · ${issue.code} · 第 ${issue.line} 行，第 ${issue.column} 列`,
+        cls: "review-comment-lint-meta",
+      });
+      item.createEl("div", {
+        text: issue.message,
+        cls: "review-comment-lint-message",
+      });
+      if (issue.excerpt) {
+        item.createEl("code", {
+          text: issue.excerpt,
+          cls: "review-comment-lint-excerpt",
+        });
+      }
+    }
+  }
+}
+
 export default class ReviewCommentsPlugin extends Plugin {
   settings: ReviewCommentsSettings = DEFAULT_SETTINGS;
   floatingBar: HTMLDivElement | null = null;
@@ -178,6 +233,12 @@ export default class ReviewCommentsPlugin extends Plugin {
       id: "open-comments-workbench",
       name: "显示批注工作台",
       callback: () => this.activateView(),
+    });
+    this.addCommand({
+      id: "lint-current-file-comments",
+      name: "检查当前文件批注",
+      editorCallback: (editor: Editor) =>
+        this.lintCurrentFileComments(editor),
     });
     this.registerEvent(
       this.app.workspace.on("editor-menu", (menu, editor) => {
@@ -331,6 +392,19 @@ export default class ReviewCommentsPlugin extends Plugin {
       line,
       ch: editor.getLine(line).length,
     });
+  }
+
+  lintCurrentFileComments(editor: Editor) {
+    const issues = lintComments(editor.getValue());
+    const summary = countLintIssues(issues);
+    if (issues.length === 0) {
+      new Notice("批注检查完成：没有发现问题");
+    } else {
+      new Notice(
+        `批注检查完成：错误 ${summary.error}，警告 ${summary.warning}，提示 ${summary.info}`
+      );
+    }
+    new CommentLintModal(this.app, issues).open();
   }
 
   async activateView() {
@@ -517,6 +591,24 @@ function formatDate(d: Date, format: "iso" | "japanese"): string {
   const day = String(d.getDate()).padStart(2, "0");
   if (format === "japanese") return `${y}年${m}月${day}日`;
   return `${y}-${m}-${day}`;
+}
+
+function countLintIssues(
+  issues: CommentLintIssue[]
+): Record<CommentLintIssue["severity"], number> {
+  return issues.reduce(
+    (summary, issue) => {
+      summary[issue.severity] += 1;
+      return summary;
+    },
+    { error: 0, warning: 0, info: 0 }
+  );
+}
+
+function formatLintSeverity(severity: CommentLintIssue["severity"]): string {
+  if (severity === "error") return "错误";
+  if (severity === "warning") return "警告";
+  return "提示";
 }
 
 function isPlainSourceMode(view: EditorView): boolean {

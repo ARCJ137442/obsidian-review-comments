@@ -67,10 +67,13 @@ Then in Obsidian:
 Alternatively:
 
 - Select text -> Command palette -> `Review Comments: Add comment to selection`
+- Command palette -> `Review Comments: 检查当前文件批注`
 - Select text -> optional floating toolbar type button
 - Assign a hotkey, recommended: `Cmd + Shift + M`
 
 The floating toolbar can be disabled in plugin settings without affecting the right-click menu, commands, or hotkeys.
+
+`检查当前文件批注` scans the current Markdown file for protocol issues and reports errors, warnings, and informational hints in a Notice plus modal. It currently covers duplicate `id`, legacy `replyTo`, orphan `{>>` / `<<}` markers, suspected comments inside fenced code blocks, bare `{}` / `{}{}{}` edge cases, range comments embedded in headings, multiline comments in line-sensitive Markdown structures, legacy pipe metadata inside tables, and minimal drafts without `id`.
 
 ## Side panel
 
@@ -101,6 +104,10 @@ npm run dev   # watch mode
 npm run build # production build
 npm test      # parser and source-editing regression tests
 ```
+
+## Changelog
+
+- 2026-06-09: Added the `检查当前文件批注` command for current-file comment protocol linting. Validation: `npm test` 43/43 PASS, `npx tsc --noEmit` PASS, `npm run build` PASS, deployed only `main.js`, `manifest.json`, and `styles.css` to the test vault without overwriting `data.json`.
 
 ## License
 

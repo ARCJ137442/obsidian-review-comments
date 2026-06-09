@@ -375,3 +375,68 @@
   justify-content: flex-end;
   gap: 8px;
 }
+
+.review-comment-lint-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.review-comment-lint-empty,
+.review-comment-lint-summary {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.review-comment-lint-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.review-comment-lint-item {
+  border: 1px solid var(--background-modifier-border);
+  border-left: 4px solid var(--text-muted);
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: var(--background-secondary);
+}
+
+.review-comment-lint-item.is-error {
+  border-left-color: var(--text-error, #d94a4a);
+}
+
+.review-comment-lint-item.is-warning {
+  border-left-color: var(--text-warning, #d9961f);
+}
+
+.review-comment-lint-item.is-info {
+  border-left-color: var(--interactive-accent);
+}
+
+.review-comment-lint-meta {
+  margin-bottom: 4px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.review-comment-lint-message {
+  color: var(--text-normal);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.review-comment-lint-excerpt {
+  display: block;
+  margin-top: 6px;
+  max-width: 100%;
+  overflow-x: auto;
+  white-space: pre;
+  font-size: 11px;
+}

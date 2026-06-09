@@ -67,10 +67,13 @@ ln -s "$(pwd)" "$VAULT/.obsidian/plugins/review-comments"
 也可以使用：
 
 - 选中文本 -> 命令面板 -> `Review Comments: Add comment to selection`
+- 命令面板 -> `Review Comments: 检查当前文件批注`
 - 选中文本 -> 可选悬浮工具条类型按钮
 - 绑定快捷键，推荐 `Cmd + Shift + M`
 
 悬浮工具条可以在插件设置中关闭，不影响右键菜单、命令面板或快捷键。
+
+`检查当前文件批注` 会扫描当前 Markdown 文件中的批注协议问题，并用 Notice + 弹窗列出错误、警告与提示。当前检查覆盖重复 `id`、旧 `replyTo`、半截 `{>>` / `<<}` 标记、代码块内疑似批注、裸 `{}` / `{}{}{}` 伪批注、标题内嵌范围批注、列表 / 表格 / 引用 / callout 内多行风险、表格内旧式 `|` 元数据，以及缺少 `id` 的最小草稿提示。
 
 ## 侧栏面板
 
@@ -94,7 +97,6 @@ ln -s "$(pwd)" "$VAULT/.obsidian/plugins/review-comments"
 
 这样可以闭合流程：在 Obsidian 中批注 -> 交给 LLM 处理 -> 得到干净 diff。
 
-
 ## 开发
 
 ```bash
@@ -107,6 +109,7 @@ npm test      # parser and source-editing regression tests
 
 ## 变更记录
 
+- 2026-06-09：新增 `检查当前文件批注` 命令。可在当前文件中检查重复 `id`、旧 `replyTo`、孤立 metadata 标记、代码块内疑似批注、裸 `{}` 边界、标题内嵌批注、行敏感结构多行风险、表格 pipe metadata 风险和缺少 `id` 的最小草稿提示。验证：`npm test` 43/43 PASS，`npx tsc --noEmit` PASS，`npm run build` PASS，并已只部署 `main.js`、`manifest.json`、`styles.css` 到测试 vault，未覆盖 `data.json`。
 - 2026-06-09：修复多行批注正文折叠。多行锚定文本继续跨行高亮 / 下划线；多行批注正文在 Live Preview 中折叠后不再残留空白行。验证：`npm test` 36/36 PASS，`npx tsc --noEmit` PASS，`npm run build` PASS，并已在 `ExoNet-Reticulum-rt44-migration` 测试 vault 中人工确认效果正常。
 
 ## License

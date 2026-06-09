@@ -64,6 +64,19 @@ export interface CommentSummary {
   byType: Record<string, number>;
 }
 
+export type CommentLintSeverity = "error" | "warning" | "info";
+
+export interface CommentLintIssue {
+  code: string;
+  severity: CommentLintSeverity;
+  message: string;
+  offset: number;
+  end: number;
+  line: number;
+  column: number;
+  excerpt: string;
+}
+
 interface AnchorMatch {
   anchor: string;
   syntax: CommentSyntax;
@@ -236,6 +249,171 @@ export function findComments(text: string): ParsedComment[] {
   }
 
   return comments;
+}
+
+export function lintComments(text: string): CommentLintIssue[] {
+  const codeRanges = getFencedCodeRanges(text);
+  const comments = findComments(text);
+  const issues: CommentLintIssue[] = [];
+  const matchedMetaStarts = new Set<number>();
+  const matchedMetaCloses = new Set<number>();
+  const entriesById = new Map<string, ParsedCommentEntry[]>();
+
+  for (const comment of comments) {
+    if (comment.anchor && isHeadingLine(text, comment.offset)) {
+      issues.push(
+        makeLintIssue(
+          text,
+          "heading-embedded-comment",
+          "warning",
+          "标题行里嵌入了范围批注；标题批注应改为标题下方的单点批注，避免干扰 Obsidian 标题索引。",
+          comment.offset,
+          comment.end
+        )
+      );
+    }
+
+    if (comment.full.includes("\n") && isLineSensitiveRange(text, comment.offset, comment.end)) {
+      issues.push(
+        makeLintIssue(
+          text,
+          "multiline-in-line-sensitive-block",
+          "warning",
+          "批注跨越了列表、表格、引用块或 callout；Agent 回复应尽量保持单行，必要时谨慎维护原 Markdown 前缀。",
+          comment.offset,
+          comment.end
+        )
+      );
+    }
+
+    for (const entry of comment.entries) {
+      matchedMetaStarts.add(entry.offset);
+      matchedMetaCloses.add(entry.end - META_CLOSE.length);
+
+      if (entry.meta.id) {
+        const bucket = entriesById.get(entry.meta.id) || [];
+        bucket.push(entry);
+        entriesById.set(entry.meta.id, bucket);
+      } else {
+        issues.push(
+          makeLintIssue(
+            text,
+            "missing-id",
+            "info",
+            "批注缺少 id；这对人工草稿是允许的，但会降低 Agent 自动定位、状态更新和迁移的稳定性。",
+            entry.offset,
+            entry.end
+          )
+        );
+      }
+
+      if (
+        entry.meta.replyTo ||
+        COMMENT_FORMAT.metadataKeys.replyTo in entry.meta.attrs ||
+        COMMENT_FORMAT.metadataKeys.legacyReplyTo in entry.meta.attrs
+      ) {
+        issues.push(
+          makeLintIssue(
+            text,
+            "legacy-reply-to",
+            "warning",
+            "发现旧式 replyTo/reply-to；当前批注线程是线性追加，不应在新回复里继续写 replyTo。",
+            entry.offset,
+            entry.end
+          )
+        );
+      }
+
+      if (entry.metaSource.includes("|") && isTableLine(text, entry.offset)) {
+        issues.push(
+          makeLintIssue(
+            text,
+            "pipe-metadata-in-table",
+            "warning",
+            "表格行里使用了旧式管道元数据；`|` 可能破坏 Markdown 表格，建议改为分号元数据。",
+            entry.offset,
+            entry.end
+          )
+        );
+      }
+    }
+  }
+
+  for (const [, entries] of entriesById) {
+    if (entries.length <= 1) continue;
+    for (const entry of entries) {
+      issues.push(
+        makeLintIssue(
+          text,
+          "duplicate-id",
+          "error",
+          `批注 id 重复：${entry.meta.id}。id 应保持唯一，否则 Agent 无法稳定定位线程。`,
+          entry.offset,
+          entry.end
+        )
+      );
+    }
+  }
+
+  for (const range of codeRanges) {
+    const code = text.slice(range.start, range.end);
+    if (!containsCommentMarkup(code)) continue;
+    issues.push(
+      makeLintIssue(
+        text,
+        "comment-markup-in-code-fence",
+        "info",
+        "代码块内出现疑似批注标记；插件不会解析 fenced code block 里的批注。",
+        range.start,
+        range.end
+      )
+    );
+  }
+
+  scanToken(text, META_OPEN, (offset) => {
+    if (isInsideRange(offset, codeRanges)) return;
+    if (matchedMetaStarts.has(offset)) return;
+    issues.push(
+      makeLintIssue(
+        text,
+        "orphan-meta-open",
+        "error",
+        "发现未能解析的 `{>>`；可能缺少锚点、关闭标记或被其他文本打断。",
+        offset,
+        offset + META_OPEN.length
+      )
+    );
+  });
+
+  scanToken(text, META_CLOSE, (offset) => {
+    if (isInsideRange(offset, codeRanges)) return;
+    if (matchedMetaCloses.has(offset)) return;
+    issues.push(
+      makeLintIssue(
+        text,
+        "orphan-meta-close",
+        "error",
+        "发现未能匹配的 `<<}`；可能存在残缺批注或误输入。",
+        offset,
+        offset + META_CLOSE.length
+      )
+    );
+  });
+
+  scanBareEmptyAnchors(text, codeRanges, (offset, end) => {
+    issues.push(
+      makeLintIssue(
+        text,
+        "bare-empty-braces",
+        "info",
+        "发现裸 `{}` 或连续 `{}`；只有紧跟 `{>>...<<}` 的 `{}{>>...<<}` 才是单点批注。",
+        offset,
+        end
+      )
+    );
+  });
+
+  return issues.sort((a, b) => a.offset - b.offset || severityRank(a.severity) - severityRank(b.severity));
 }
 
 export function summarizeComments(comments: ParsedComment[]): CommentSummary {
@@ -633,4 +811,110 @@ function isInsideRange(offset: number, ranges: Range[]): boolean {
 
 function containingRange(offset: number, ranges: Range[]): Range | undefined {
   return ranges.find((range) => offset >= range.start && offset < range.end);
+}
+
+function makeLintIssue(
+  text: string,
+  code: string,
+  severity: CommentLintSeverity,
+  message: string,
+  offset: number,
+  end: number
+): CommentLintIssue {
+  const position = offsetToLineColumn(text, offset);
+  return {
+    code,
+    severity,
+    message,
+    offset,
+    end,
+    line: position.line,
+    column: position.column,
+    excerpt: getLineAtOffset(text, offset).trim(),
+  };
+}
+
+function severityRank(severity: CommentLintSeverity): number {
+  if (severity === "error") return 0;
+  if (severity === "warning") return 1;
+  return 2;
+}
+
+function offsetToLineColumn(text: string, offset: number): { line: number; column: number } {
+  let line = 1;
+  let lineStart = 0;
+  for (let index = 0; index < offset; index += 1) {
+    if (text.charCodeAt(index) === 10) {
+      line += 1;
+      lineStart = index + 1;
+    }
+  }
+  return { line, column: offset - lineStart + 1 };
+}
+
+function getLineAtOffset(text: string, offset: number): string {
+  const start = text.lastIndexOf("\n", Math.max(0, offset - 1)) + 1;
+  const end = text.indexOf("\n", offset);
+  return text.slice(start, end === -1 ? text.length : end);
+}
+
+function isHeadingLine(text: string, offset: number): boolean {
+  return /^\s{0,3}#{1,6}\s+/.test(getLineAtOffset(text, offset));
+}
+
+function isTableLine(text: string, offset: number): boolean {
+  const line = getLineAtOffset(text, offset).trim();
+  return line.startsWith("|") || line.endsWith("|") || /\s\|\s/.test(line);
+}
+
+function isLineSensitiveRange(text: string, start: number, end: number): boolean {
+  let lineStart = text.lastIndexOf("\n", Math.max(0, start - 1)) + 1;
+  while (lineStart <= end) {
+    const lineEndRaw = text.indexOf("\n", lineStart);
+    const lineEnd = lineEndRaw === -1 ? text.length : lineEndRaw;
+    const line = text.slice(lineStart, lineEnd);
+    if (isLineSensitiveLine(line)) return true;
+    if (lineEndRaw === -1) break;
+    lineStart = lineEndRaw + 1;
+  }
+  return false;
+}
+
+function isLineSensitiveLine(line: string): boolean {
+  return (
+    /^\s{0,3}(?:[-+*]|\d+[.)])\s+/.test(line) ||
+    /^\s{0,3}>\s?/.test(line) ||
+    /^\s{0,3}>\s?\[!/.test(line) ||
+    line.trim().includes("|")
+  );
+}
+
+function scanToken(
+  text: string,
+  token: string,
+  onMatch: (offset: number) => void
+): void {
+  let cursor = 0;
+  while (cursor < text.length) {
+    const offset = text.indexOf(token, cursor);
+    if (offset === -1) return;
+    onMatch(offset);
+    cursor = offset + token.length;
+  }
+}
+
+function scanBareEmptyAnchors(
+  text: string,
+  codeRanges: Range[],
+  onMatch: (offset: number, end: number) => void
+): void {
+  const pattern = /(?:\{\})+/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(text))) {
+    const offset = match.index;
+    const end = offset + match[0].length;
+    if (isInsideRange(offset, codeRanges)) continue;
+    if (text.startsWith(META_OPEN, end)) continue;
+    onMatch(offset, end);
+  }
 }

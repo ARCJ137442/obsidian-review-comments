@@ -5,6 +5,7 @@ import {
   findComments,
   formatComment,
   parseMeta,
+  lintComments,
   removeComment,
   replaceCommentEntryMeta,
   replaceCommentMeta,
@@ -374,6 +375,124 @@ describe("comment-core summary and filtering", () => {
     expect(closedComments.map((comment) => comment.anchor)).toEqual(["一", "二"]);
     expect(closedComments[0].entries.map((entry) => entry.meta.body)).toEqual([
       "回复",
+    ]);
+  });
+});
+
+describe("comment-core linting", () => {
+  it("returns no issues for a fully attributed linear thread", () => {
+    const source =
+      "{锚点}{>>author=Argon;date=2026-06-09;type=ASK;id=RC-LINT-1: 正文<<}{>>author=Codex;date=2026-06-09;type=NOTE;id=RC-LINT-2: 回复<<}";
+
+    const issues = lintComments(source);
+
+    expect(issues).toHaveLength(0);
+  });
+
+  it("reports duplicate ids and legacy reply targets", () => {
+    const source = [
+      "{一}{>>author=A;date=2026-06-09;type=NOTE;id=RC-DUP: 第一条<<}",
+      "{二}{>>author=B;date=2026-06-09;type=NOTE;id=RC-DUP;replyTo=RC-OLD: 第二条<<}",
+    ].join("\n");
+
+    const issues = lintComments(source);
+
+    expect(issues.map((issue) => issue.code)).toEqual([
+      "duplicate-id",
+      "duplicate-id",
+      "legacy-reply-to",
+    ]);
+    expect(issues.filter((issue) => issue.severity === "error")).toHaveLength(2);
+    expect(issues.find((issue) => issue.code === "legacy-reply-to")).toMatchObject({
+      severity: "warning",
+      line: 2,
+    });
+  });
+
+  it("reports orphan metadata markers outside fenced code blocks", () => {
+    const source = [
+      "正文 {>>没有锚点",
+      "另一处 <<}",
+      "```md",
+      "{代码}{>>不解析<<}",
+      "```",
+    ].join("\n");
+
+    const issues = lintComments(source);
+
+    expect(issues.map((issue) => issue.code)).toEqual([
+      "orphan-meta-open",
+      "orphan-meta-close",
+      "comment-markup-in-code-fence",
+    ]);
+    expect(issues[0]).toMatchObject({
+      severity: "error",
+      line: 1,
+    });
+  });
+
+  it("treats bare empty braces as an informational point-comment hint", () => {
+    const source = [
+      "{}",
+      "{}{}{}",
+      "{}{>>author=Argon;date=2026-06-09;type=NOTE;id=RC-POINT: 真正单点批注<<}",
+    ].join("\n");
+
+    const issues = lintComments(source);
+
+    expect(findComments(source)).toHaveLength(1);
+    expect(issues.map((issue) => issue.code)).toEqual([
+      "bare-empty-braces",
+      "bare-empty-braces",
+    ]);
+    expect(issues.every((issue) => issue.severity === "info")).toBe(true);
+  });
+
+  it("warns about title-embedded comments and multiline line-sensitive comments", () => {
+    const source = [
+      "# {标题}{>>author=Argon;date=2026-06-09;type=ASK;id=RC-H: 不要嵌标题<<}",
+      "- {列表第一行",
+      "  列表第二行}{>>author=Argon;date=2026-06-09;type=NOTE;id=RC-LIST: 多行批注",
+      "  - 继续<<}",
+    ].join("\n");
+
+    const issues = lintComments(source);
+
+    expect(issues.map((issue) => issue.code)).toEqual([
+      "heading-embedded-comment",
+      "multiline-in-line-sensitive-block",
+    ]);
+    expect(issues.every((issue) => issue.severity === "warning")).toBe(true);
+  });
+
+  it("warns when legacy pipe metadata appears inside a Markdown table row", () => {
+    const source = [
+      "| A | B |",
+      "| - | - |",
+      "| {表格锚点}{>>Argon|2026-06-09|NOTE|id=RC-TABLE: 管道元数据<<} | x |",
+    ].join("\n");
+
+    const issues = lintComments(source);
+
+    expect(issues.map((issue) => issue.code)).toEqual([
+      "pipe-metadata-in-table",
+    ]);
+    expect(issues[0]).toMatchObject({
+      severity: "warning",
+      line: 3,
+    });
+  });
+
+  it("keeps minimal human drafts valid but suggests adding an id", () => {
+    const source = "{草稿锚点}{>>人工草稿<<}";
+
+    const issues = lintComments(source);
+
+    expect(issues).toEqual([
+      expect.objectContaining({
+        code: "missing-id",
+        severity: "info",
+      }),
     ]);
   });
 });
