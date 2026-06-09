@@ -1,0 +1,4 @@
+interface:
+  display_name: "Obsidian Review Comments"
+  short_description: "Read and write Markdown-native Obsidian review comments"
+  default_prompt: "Use $obsidian-review-comments when this workspace is an Obsidian vault with the Review Comments plugin enabled, or when I explicitly ask you to process Review Comments annotations."
