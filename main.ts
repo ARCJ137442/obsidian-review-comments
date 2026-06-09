@@ -53,6 +53,18 @@ import {
   replaceCommentThreadStatus,
   summarizeComments,
 } from "./comment-core";
+import {
+  DEFAULT_COMMENT_TYPES,
+  ReviewCommentType,
+  getCommentTypeColorTriplet,
+  getReviewCommentType,
+  normalizeCommentTypes,
+  normalizeHexColor,
+  sanitizeCommentTypeIcon,
+  sanitizeCommentTypeId,
+  sanitizeCommentTypeLabel,
+  sanitizeCommentTypeTag,
+} from "./comment-types";
 
 interface ReviewCommentsSettings {
   authorName: string;
@@ -64,6 +76,7 @@ interface ReviewCommentsSettings {
   commentExportFormat: CommentExportFormat;
   compatibleCommentSyntaxes: CommentSyntax[];
   writeCommentSyntax: CommentSyntax;
+  commentTypes: ReviewCommentType[];
 }
 
 const DEFAULT_SETTINGS: ReviewCommentsSettings = {
@@ -76,6 +89,7 @@ const DEFAULT_SETTINGS: ReviewCommentsSettings = {
   commentExportFormat: "simple",
   compatibleCommentSyntaxes: [...COMMENT_SYNTAXES],
   writeCommentSyntax: COMMENT_FORMAT.defaultSyntax,
+  commentTypes: DEFAULT_COMMENT_TYPES.map((type) => ({ ...type })),
 };
 
 const SYNTAX_LABELS: Record<CommentSyntax, string> = {
@@ -101,29 +115,31 @@ function normalizeSettings(
       loaded.compatibleCommentSyntaxes,
       [writeCommentSyntax]
     ),
+    commentTypes: normalizeCommentTypes(loaded.commentTypes),
   };
+}
+
+function applyTypeColor(
+  el: HTMLElement,
+  types: ReviewCommentType[],
+  typeTag: string | null | undefined,
+  variableName = "--review-comment-type-color"
+) {
+  el.style.setProperty(
+    variableName,
+    getCommentTypeColorTriplet(types, typeTag)
+  );
+}
+
+interface ThreadFilterSummary {
+  total: number;
+  open: number;
+  closed: number;
+  byType: Record<string, number>;
 }
 
 const VIEW_TYPE_COMMENTS = "review-comments-view";
 const setCommentDecorationMode = StateEffect.define<boolean>();
-
-const TYPES: { id: string; tag: string; label: string; icon: string }[] = [
-  { id: "comment", tag: "COMMENT", label: "批注", icon: "💬" },
-  { id: "ask", tag: "ASK", label: "提问", icon: "❓" },
-  { id: "edit", tag: "EDIT", label: "修改", icon: "✏️" },
-  { id: "praise", tag: "PRAISE", label: "称赞", icon: "👍" },
-  { id: "note", tag: "NOTE", label: "备注", icon: "💬" },
-];
-
-const TYPE_ICON: Record<string, string> = TYPES.reduce((acc, t) => {
-  acc[t.tag] = t.icon;
-  return acc;
-}, {} as Record<string, string>);
-
-const TYPE_LABEL: Record<string, string> = TYPES.reduce((acc, t) => {
-  acc[t.tag] = t.label;
-  return acc;
-}, {} as Record<string, string>);
 
 interface HeadingCommentContext {
   line: number;
@@ -133,27 +149,38 @@ interface HeadingCommentContext {
 class CommentInputModal extends Modal {
   private selectedTypeTag: string;
   private readonly onSubmit: (body: string, typeTag: string) => void;
+  private readonly commentTypes: ReviewCommentType[];
   private readonly titleText: string;
   private readonly submitText: string;
   private readonly initialBody: string;
   private readonly showTypeSelector: boolean;
+  private readonly typeSelectorLabel: string;
 
   constructor(
     app: App,
+    commentTypes: ReviewCommentType[],
     typeTag: string,
     onSubmit: (body: string, typeTag: string) => void,
     titleText?: string,
     submitText?: string,
     initialBody?: string,
-    showTypeSelector?: boolean
+    showTypeSelector?: boolean,
+    typeSelectorLabel?: string
   ) {
     super(app);
-    this.selectedTypeTag = typeTag;
+    this.commentTypes = withCurrentCommentType(commentTypes, typeTag);
+    this.selectedTypeTag = getReviewCommentType(
+      this.commentTypes,
+      typeTag
+    ).tag;
     this.onSubmit = onSubmit;
-    this.titleText = titleText || formatAddCommentTitle(this.selectedTypeTag);
+    this.titleText =
+      titleText ||
+      formatAddCommentTitle(this.selectedTypeTag, this.commentTypes);
     this.submitText = submitText || "添加批注";
     this.initialBody = initialBody || "";
     this.showTypeSelector = Boolean(showTypeSelector);
+    this.typeSelectorLabel = typeSelectorLabel || "批注类型";
   }
 
   onOpen() {
@@ -211,7 +238,7 @@ class CommentInputModal extends Modal {
       cls: "review-comment-modal-type-selector",
     });
     selector.createEl("span", {
-      text: "回复类型",
+      text: this.typeSelectorLabel,
       cls: "review-comment-modal-type-label",
     });
     const options = selector.createDiv({
@@ -226,7 +253,7 @@ class CommentInputModal extends Modal {
       }
     };
 
-    for (const type of TYPES) {
+    for (const type of this.commentTypes) {
       const button = options.createEl("button", {
         cls: "review-comment-modal-type-option",
         attr: {
@@ -240,6 +267,7 @@ class CommentInputModal extends Modal {
         cls: "review-comment-modal-type-icon",
       });
       button.createSpan({ text: type.label });
+      applyTypeColor(button, this.commentTypes, type.tag, "--review-comment-chip-color");
       button.addEventListener("click", () => {
         this.selectedTypeTag = type.tag;
         updateSelection();
@@ -308,19 +336,13 @@ export default class ReviewCommentsPlugin extends Plugin {
   settings: ReviewCommentsSettings = DEFAULT_SETTINGS;
   floatingBar: HTMLDivElement | null = null;
   selectionDebounce: number | null = null;
+  private registeredTypeCommandIds = new Set<string>();
 
   async onload() {
     console.log("[ReviewComments] onload");
     await this.loadSettings();
 
-    for (const t of TYPES) {
-      this.addCommand({
-        id: `add-comment-${t.id}`,
-        name: `添加${t.label} ${t.icon}`,
-        editorCallback: (editor: Editor) =>
-          this.addCommentToSelection(editor, t.tag),
-      });
-    }
+    this.registerCommentTypeCommands();
 
     this.addCommand({
       id: "open-comments-panel",
@@ -369,7 +391,7 @@ export default class ReviewCommentsPlugin extends Plugin {
             .setSection("review-comments")
             .setIsLabel(true)
         );
-        for (const t of TYPES) {
+        for (const t of this.getCommentTypes()) {
           menu.addItem((item) =>
             item
               .setTitle(`${t.icon} ${t.label}`)
@@ -393,7 +415,9 @@ export default class ReviewCommentsPlugin extends Plugin {
       createCommentDecorationExtension(
         () => this.settings.foldEditorMarkup,
         () => this.settings.highlightAnchors,
-        () => this.getParseOptions()
+        () => this.getParseOptions(),
+        (typeTag) => this.getTypeIcon(typeTag),
+        (typeTag) => this.getTypeColorTriplet(typeTag)
       ),
     ]);
 
@@ -425,11 +449,76 @@ export default class ReviewCommentsPlugin extends Plugin {
   }
 
   async saveSettings() {
+    this.settings = normalizeSettings(this.settings);
     await this.saveData(this.settings);
   }
 
   getParseOptions(): CommentParseOptions {
     return { syntaxes: this.settings.compatibleCommentSyntaxes };
+  }
+
+  getCommentTypes(): ReviewCommentType[] {
+    return this.settings.commentTypes;
+  }
+
+  getCommentType(typeTag: string | null | undefined): ReviewCommentType {
+    return getReviewCommentType(this.settings.commentTypes, typeTag);
+  }
+
+  getTypeIcon(typeTag: string | null | undefined): string {
+    return this.getCommentType(typeTag).icon;
+  }
+
+  getTypeLabel(typeTag: string | null | undefined): string {
+    return this.getCommentType(typeTag).label;
+  }
+
+  getTypeColor(typeTag: string | null | undefined): string {
+    return this.getCommentType(typeTag).color;
+  }
+
+  getTypeColorTriplet(typeTag: string | null | undefined): string {
+    return getCommentTypeColorTriplet(this.settings.commentTypes, typeTag);
+  }
+
+  applyTypeColor(
+    el: HTMLElement,
+    typeTag: string | null | undefined,
+    variableName = "--review-comment-type-color"
+  ) {
+    applyTypeColor(el, this.settings.commentTypes, typeTag, variableName);
+  }
+
+  registerCommentTypeCommands() {
+    const activeCommandIds = new Set(
+      this.getCommentTypes().map((type) => `add-comment-${type.id}`)
+    );
+    for (const commandId of this.registeredTypeCommandIds) {
+      if (!activeCommandIds.has(commandId)) {
+        this.removeCommand(commandId);
+        this.registeredTypeCommandIds.delete(commandId);
+      }
+    }
+
+    for (const type of this.getCommentTypes()) {
+      const commandId = `add-comment-${type.id}`;
+      if (this.registeredTypeCommandIds.has(commandId)) continue;
+      this.registeredTypeCommandIds.add(commandId);
+      this.addCommand({
+        id: commandId,
+        name: `添加${type.label} ${type.icon}`,
+        editorCallback: (editor: Editor) => {
+          const activeType = this.getCommentTypes().find(
+            (current) => current.id === type.id && current.tag === type.tag
+          );
+          if (!activeType) {
+            new Notice("批注类型已变更，请重新打开命令面板");
+            return;
+          }
+          this.addCommentToSelection(editor, activeType.tag);
+        },
+      });
+    }
   }
 
   escapeCommentBody(body: string): string {
@@ -453,14 +542,15 @@ export default class ReviewCommentsPlugin extends Plugin {
       from,
       to
     );
+    const commentTypes = this.getCommentTypes();
     const title = headingContext
-      ? formatAddCommentTitle(typeTag, "标题批注")
+      ? formatAddCommentTitle(typeTag, commentTypes, "标题批注")
       : selection
         ? undefined
-        : formatAddCommentTitle(typeTag, "单点批注");
+        : formatAddCommentTitle(typeTag, commentTypes, "单点批注");
 
-    new CommentInputModal(this.app, typeTag, (body) => {
-      const meta = this.createCommentMeta(typeTag, body);
+    new CommentInputModal(this.app, commentTypes, typeTag, (body, selectedTypeTag) => {
+      const meta = this.createCommentMeta(selectedTypeTag, body);
       if (headingContext) {
         meta.attrs = {
           ...meta.attrs,
@@ -617,24 +707,7 @@ export default class ReviewCommentsPlugin extends Plugin {
     bar.style.display = "none";
     document.body.appendChild(bar);
     this.floatingBar = bar;
-
-    for (const t of TYPES) {
-      const btn = document.createElement("button");
-      btn.className = "review-comment-type-btn";
-      btn.title = `${t.label}（插入 ${t.tag}）`;
-      btn.innerHTML = `<span class="rc-icon">${t.icon}</span><span class="rc-label">${t.label}</span>`;
-      btn.addEventListener("mousedown", (e) => e.preventDefault());
-      btn.addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        const mdView = this.app.workspace.getActiveViewOfType(MarkdownView);
-        if (mdView && mdView.editor.getSelection()) {
-          this.addCommentToSelection(mdView.editor, t.tag);
-        }
-        this.hideFloatingBar();
-      });
-      bar.appendChild(btn);
-    }
+    this.renderFloatingBarButtons();
 
     this.registerDomEvent(document, "selectionchange", () => {
       if (this.selectionDebounce !== null) {
@@ -653,6 +726,32 @@ export default class ReviewCommentsPlugin extends Plugin {
     this.registerDomEvent(document, "keydown", (e: KeyboardEvent) => {
       if (e.key === "Escape") this.hideFloatingBar();
     });
+  }
+
+  renderFloatingBarButtons() {
+    const bar = this.floatingBar;
+    if (!bar) return;
+    bar.empty();
+
+    for (const t of this.getCommentTypes()) {
+      const btn = document.createElement("button");
+      btn.className = "review-comment-type-btn";
+      btn.title = `${t.label}（插入 ${t.tag}）`;
+      btn.createSpan({ text: t.icon, cls: "rc-icon" });
+      btn.createSpan({ text: t.label, cls: "rc-label" });
+      this.applyTypeColor(btn, t.tag);
+      btn.addEventListener("mousedown", (e) => e.preventDefault());
+      btn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const mdView = this.app.workspace.getActiveViewOfType(MarkdownView);
+        if (mdView && mdView.editor.getSelection()) {
+          this.addCommentToSelection(mdView.editor, t.tag);
+        }
+        this.hideFloatingBar();
+      });
+      bar.appendChild(btn);
+    }
   }
 
   updateFloatingBar() {
@@ -752,9 +851,12 @@ export default class ReviewCommentsPlugin extends Plugin {
           span.setAttribute("aria-label", "单点批注");
         }
         span.dataset.type = meta.type;
+        this.applyTypeColor(span, meta.type);
         span.setAttribute(
           "title",
-          formatThreadTitle(comment.entries)
+          formatThreadTitle(comment.entries, (typeTag) =>
+            this.getTypeIcon(typeTag)
+          )
         );
         frag.appendChild(span);
         lastIndex = comment.end;
@@ -844,19 +946,25 @@ function extractHeadingTarget(line: string): string | null {
 class CommentPointWidget extends WidgetType {
   constructor(
     private readonly title: string,
-    private readonly type: string
+    private readonly type: string,
+    private readonly colorTriplet: string
   ) {
     super();
   }
 
   eq(other: CommentPointWidget): boolean {
-    return this.title === other.title && this.type === other.type;
+    return (
+      this.title === other.title &&
+      this.type === other.type &&
+      this.colorTriplet === other.colorTriplet
+    );
   }
 
   toDOM(): HTMLElement {
     const span = document.createElement("span");
     span.className = "review-comment-point-live";
     span.dataset.type = this.type;
+    span.style.setProperty("--review-comment-type-color", this.colorTriplet);
     span.textContent = "•";
     span.title = this.title;
     span.setAttribute("aria-label", "单点批注");
@@ -871,7 +979,9 @@ class CommentPointWidget extends WidgetType {
 function createCommentDecorationExtension(
   shouldFoldMarkup: () => boolean,
   shouldHighlightAnchors: () => boolean,
-  getParseOptions: () => CommentParseOptions
+  getParseOptions: () => CommentParseOptions,
+  getTypeIcon: (typeTag: string | null | undefined) => string,
+  getTypeColorTriplet: (typeTag: string | null | undefined) => string
 ) {
   // Cross-line comment bodies must be folded by directly provided StateField
   // decorations. ViewPlugin-provided replace decorations cannot replace line
@@ -884,7 +994,9 @@ function createCommentDecorationExtension(
         shouldFoldMarkup(),
         shouldHighlightAnchors(),
         true,
-        getParseOptions()
+        getParseOptions(),
+        getTypeIcon,
+        getTypeColorTriplet
       );
     },
     update(value, transaction) {
@@ -901,7 +1013,9 @@ function createCommentDecorationExtension(
           shouldFoldMarkup(),
           shouldHighlightAnchors(),
           isLivePreview,
-          getParseOptions()
+          getParseOptions(),
+          getTypeIcon,
+          getTypeColorTriplet
         );
       }
 
@@ -915,7 +1029,9 @@ function createCommentDecorationExtension(
             shouldFoldMarkup(),
             shouldHighlightAnchors(),
             isLivePreview,
-            getParseOptions()
+            getParseOptions(),
+            getTypeIcon,
+            getTypeColorTriplet
           );
         }
 
@@ -930,7 +1046,9 @@ function createCommentDecorationExtension(
             shouldFoldMarkup(),
             shouldHighlightAnchors(),
             isLivePreview,
-            comments
+            comments,
+            getTypeIcon,
+            getTypeColorTriplet
           ),
           isLivePreview,
         };
@@ -945,7 +1063,9 @@ function createCommentDecorationExtension(
           shouldFoldMarkup(),
           shouldHighlightAnchors(),
           isLivePreview,
-          value.comments
+          value.comments,
+          getTypeIcon,
+          getTypeColorTriplet
         ),
         isLivePreview,
       };
@@ -957,21 +1077,51 @@ function createCommentDecorationExtension(
   const modeWatcher = ViewPlugin.fromClass(
     class {
       private isLivePreview: boolean;
+      private pendingMode: boolean | null = null;
+      private pendingDispatch: number | null = null;
+      private destroyed = false;
 
       constructor(view: EditorView) {
         this.isLivePreview = !isPlainSourceMode(view);
-        view.dispatch({
-          effects: setCommentDecorationMode.of(this.isLivePreview),
-        });
+        this.scheduleModeDispatch(view, this.isLivePreview);
       }
 
       update(update: ViewUpdate) {
         const next = !isPlainSourceMode(update.view);
         if (next === this.isLivePreview) return;
         this.isLivePreview = next;
-        update.view.dispatch({
-          effects: setCommentDecorationMode.of(next),
-        });
+        this.scheduleModeDispatch(update.view, next);
+      }
+
+      destroy() {
+        this.destroyed = true;
+        if (this.pendingDispatch !== null) {
+          window.clearTimeout(this.pendingDispatch);
+          this.pendingDispatch = null;
+        }
+        this.pendingMode = null;
+      }
+
+      private scheduleModeDispatch(view: EditorView, mode: boolean) {
+        this.pendingMode = mode;
+        if (this.pendingDispatch !== null) return;
+
+        // CodeMirror forbids dispatching while a ViewPlugin constructor/update is
+        // running. Defer mode sync to the next task so Obsidian can finish the
+        // current editor update before we refresh the folding decorations.
+        this.pendingDispatch = window.setTimeout(() => {
+          this.pendingDispatch = null;
+          if (this.destroyed || this.pendingMode === null) return;
+
+          const nextMode = this.pendingMode;
+          this.pendingMode = null;
+          const current = view.state.field(decorationField, false);
+          if (current?.isLivePreview === nextMode) return;
+
+          view.dispatch({
+            effects: setCommentDecorationMode.of(nextMode),
+          });
+        }, 0);
       }
     }
   );
@@ -990,7 +1140,9 @@ function buildCommentDecorationState(
   shouldFoldMarkup: boolean,
   shouldHighlightAnchors: boolean,
   isLivePreview: boolean,
-  parseOptions: CommentParseOptions
+  parseOptions: CommentParseOptions,
+  getTypeIcon: (typeTag: string | null | undefined) => string,
+  getTypeColorTriplet: (typeTag: string | null | undefined) => string
 ): CommentDecorationState {
   const comments = findComments(state.doc.toString(), parseOptions);
   return {
@@ -1000,7 +1152,9 @@ function buildCommentDecorationState(
       shouldFoldMarkup,
       shouldHighlightAnchors,
       isLivePreview,
-      comments
+      comments,
+      getTypeIcon,
+      getTypeColorTriplet
     ),
     isLivePreview,
   };
@@ -1011,7 +1165,9 @@ function buildCommentDecorationsFromComments(
   shouldFoldMarkup: boolean,
   shouldHighlightAnchors: boolean,
   isLivePreview: boolean,
-  comments: ParsedComment[]
+  comments: ParsedComment[],
+  getTypeIcon: (typeTag: string | null | undefined) => string,
+  getTypeColorTriplet: (typeTag: string | null | undefined) => string
 ): DecorationSet {
   const ranges: Range<Decoration>[] = [];
   const foldMarkup = shouldFoldMarkup && isLivePreview;
@@ -1023,7 +1179,8 @@ function buildCommentDecorationsFromComments(
     const metaStart = comment.metaStart;
     const end = comment.end;
     const meta = comment.meta;
-    const title = formatThreadTitle(comment.entries);
+    const title = formatThreadTitle(comment.entries, getTypeIcon);
+    const colorTriplet = getTypeColorTriplet(meta.type);
     const expanded = !foldMarkup || selectionTouchesComment(state, start, end);
 
     if (!comment.anchor) {
@@ -1036,7 +1193,7 @@ function buildCommentDecorationsFromComments(
         );
       } else {
         addReplace(ranges, start, end, {
-          widget: new CommentPointWidget(title, meta.type),
+          widget: new CommentPointWidget(title, meta.type, colorTriplet),
         });
       }
       continue;
@@ -1051,7 +1208,11 @@ function buildCommentDecorationsFromComments(
         class: `review-comment-highlight-live review-comment-folded-anchor${
           shouldHighlightAnchors ? "" : " review-comment-anchor-muted"
         }`,
-        attributes: { title, "data-type": meta.type },
+        attributes: {
+          title,
+          "data-type": meta.type,
+          style: `--review-comment-type-color: ${colorTriplet}`,
+        },
       }).range(highlightTextStart, highlightTextEnd)
     );
 
@@ -1161,8 +1322,8 @@ interface RenderCommentsOptions {
 class CommentsView extends ItemView {
   plugin: ReviewCommentsPlugin;
   lastMarkdownView: MarkdownView | null = null;
-  statusFilter: CommentStatusFilter = "all";
-  typeFilter = "all";
+  selectedStatusFilters: CommentStatusFilter[] = [];
+  selectedTypeFilters: string[] = [];
   private renderRevision = 0;
   private renderDebounce: number | null = null;
   private focusClearTimer: number | null = null;
@@ -1226,8 +1387,8 @@ class CommentsView extends ItemView {
   }
 
   async revealThread(match: ParsedComment) {
-    this.statusFilter = "all";
-    this.typeFilter = "all";
+    this.selectedStatusFilters = [];
+    this.selectedTypeFilters = [];
     this.cancelScheduledRender();
     await this.renderComments({
       preservePanelScroll: false,
@@ -1341,21 +1502,19 @@ class CommentsView extends ItemView {
     }
 
     const summary = summarizeComments(matches);
-    const availableTypes = Object.keys(summary.byType).sort((a, b) =>
-      a.localeCompare(b)
+    const availableTypes = this.getAvailableTypeTags(summary);
+    this.selectedStatusFilters = normalizeSelectedStatusFilters(
+      this.selectedStatusFilters
     );
-    if (
-      this.typeFilter !== "all" &&
-      !availableTypes.includes(this.typeFilter)
-    ) {
-      this.typeFilter = "all";
-    }
+    this.selectedTypeFilters = this.selectedTypeFilters.filter(
+      (type) => type === "all" || availableTypes.includes(type)
+    );
 
     this.renderFilterBar(nextContainer, summary, availableTypes, mdView);
 
     const visibleMatches = filterComments(matches, {
-      status: this.statusFilter,
-      type: this.typeFilter,
+      status: this.selectedStatusFilters,
+      type: this.selectedTypeFilters,
     });
 
     if (visibleMatches.length === 0) {
@@ -1419,13 +1578,14 @@ class CommentsView extends ItemView {
     const threadStatus = getThreadStatus(match);
     card.dataset.type = match.meta.type;
     card.dataset.status = threadStatus;
+    this.plugin.applyTypeColor(card, match.meta.type);
     if (threadStatus === "closed") {
       card.classList.add("is-folded");
     }
 
     const header = card.createDiv({ cls: "review-comment-card-header" });
     const icon = header.createSpan({ cls: "review-comment-card-icon" });
-    icon.textContent = TYPE_ICON[match.meta.type] || "💬";
+    icon.textContent = this.plugin.getTypeIcon(match.meta.type);
     const meta = header.createSpan({ cls: "review-comment-card-meta" });
     meta.textContent = `线程 · ${match.entries.length} 条 · ${threadStatus}`;
     if (match.meta.id) {
@@ -1524,10 +1684,11 @@ class CommentsView extends ItemView {
     const item = parent.createDiv({ cls: "review-comment-thread-entry" });
     item.dataset.type = entry.meta.type;
     item.dataset.status = entry.meta.status;
+    this.plugin.applyTypeColor(item, entry.meta.type);
 
     const header = item.createDiv({ cls: "review-comment-thread-entry-header" });
     header.createSpan({
-      text: TYPE_ICON[entry.meta.type] || "💬",
+      text: this.plugin.getTypeIcon(entry.meta.type),
       cls: "review-comment-card-icon",
     });
     header.createSpan({
@@ -1547,67 +1708,14 @@ class CommentsView extends ItemView {
 
   renderFilterBar(
     container: HTMLElement,
-    summary: ReturnType<typeof summarizeComments>,
+    summary: ThreadFilterSummary,
     availableTypes: string[],
     mdView: MarkdownView
   ) {
     const filterEl = container.createDiv({ cls: "review-comment-filterbar" });
 
-    const counts = filterEl.createDiv({ cls: "review-comment-counts" });
-    counts.createSpan({
-      text: `全部 ${summary.total}`,
-      cls: "review-comment-count-pill",
-    });
-    counts.createSpan({
-      text: `open ${summary.open}`,
-      cls: "review-comment-count-pill",
-    });
-    counts.createSpan({
-      text: `closed ${summary.closed}`,
-      cls: "review-comment-count-pill",
-    });
-
-    const controls = filterEl.createDiv({ cls: "review-comment-filter-controls" });
-
-    const statusSelect = controls.createEl("select", {
-      cls: "review-comment-filter-select",
-    });
-    const statusOptions: { value: CommentStatusFilter; label: string }[] = [
-      { value: "all", label: "全部状态" },
-      { value: "open", label: "open" },
-      { value: "closed", label: "closed" },
-    ];
-    for (const option of statusOptions) {
-      statusSelect.createEl("option", {
-        value: option.value,
-        text: option.label,
-      });
-    }
-    statusSelect.value = this.statusFilter;
-    statusSelect.addEventListener("change", () => {
-      this.statusFilter = statusSelect.value as CommentStatusFilter;
-      void this.renderComments();
-    });
-
-    const typeSelect = controls.createEl("select", {
-      cls: "review-comment-filter-select",
-    });
-    typeSelect.createEl("option", {
-      value: "all",
-      text: "全部类型",
-    });
-    for (const type of availableTypes) {
-      const label = TYPE_LABEL[type] ? `${TYPE_LABEL[type]} · ${type}` : type;
-      typeSelect.createEl("option", {
-        value: type,
-        text: `${label} (${summary.byType[type]})`,
-      });
-    }
-    typeSelect.value = this.typeFilter;
-    typeSelect.addEventListener("change", () => {
-      this.typeFilter = typeSelect.value;
-      void this.renderComments();
-    });
+    this.renderStatusFilterChips(filterEl, summary);
+    this.renderTypeFilterChips(filterEl, summary, availableTypes);
 
     const actions = filterEl.createDiv({ cls: "review-comment-toolbar" });
     const exportBtn = actions.createEl("button", {
@@ -1621,6 +1729,121 @@ class CommentsView extends ItemView {
         mdView.file?.path
       );
     });
+  }
+
+  private renderStatusFilterChips(
+    parent: HTMLElement,
+    summary: ThreadFilterSummary
+  ) {
+    const section = parent.createDiv({ cls: "review-comment-filter-section" });
+    section.createSpan({
+      text: "状态",
+      cls: "review-comment-filter-label",
+    });
+    const chips = section.createDiv({ cls: "review-comment-filter-chips" });
+    const options: { value: CommentStatusFilter; label: string; count: number }[] = [
+      { value: "all", label: "全部", count: summary.total },
+      { value: "open", label: "open", count: summary.open },
+      { value: "closed", label: "closed", count: summary.closed },
+    ];
+
+    for (const option of options) {
+      const selected = this.selectedStatusFilters.includes(option.value);
+      const chip = chips.createEl("button", {
+        cls: `review-comment-filter-chip ${
+          selected ? "is-selected" : "is-dimmed"
+        }`,
+        text: `${option.label} ${option.count}`,
+        attr: {
+          type: "button",
+          "aria-pressed": selected ? "true" : "false",
+        },
+      });
+      if (option.value === "all") {
+        chip.style.setProperty("--review-comment-chip-color", "128, 128, 128");
+      } else if (option.value === "open") {
+        chip.style.setProperty("--review-comment-chip-color", "82, 150, 91");
+      } else {
+        chip.style.setProperty("--review-comment-chip-color", "132, 142, 156");
+      }
+      chip.addEventListener("click", () => {
+        this.selectedStatusFilters = toggleFilterValue(
+          this.selectedStatusFilters,
+          option.value
+        );
+        void this.renderComments({ preservePanelScroll: true });
+      });
+    }
+  }
+
+  private renderTypeFilterChips(
+    parent: HTMLElement,
+    summary: ThreadFilterSummary,
+    availableTypes: string[]
+  ) {
+    const section = parent.createDiv({ cls: "review-comment-filter-section" });
+    section.createSpan({
+      text: "类型",
+      cls: "review-comment-filter-label",
+    });
+    const chips = section.createDiv({ cls: "review-comment-filter-chips" });
+
+    const allSelected = this.selectedTypeFilters.includes("all");
+    const allChip = chips.createEl("button", {
+      cls: `review-comment-filter-chip ${
+        allSelected ? "is-selected" : "is-dimmed"
+      }`,
+      text: `全部 ${summary.total}`,
+      attr: {
+        type: "button",
+        "aria-pressed": allSelected ? "true" : "false",
+      },
+    });
+    allChip.addEventListener("click", () => {
+      this.selectedTypeFilters = toggleFilterValue(
+        this.selectedTypeFilters,
+        "all"
+      );
+      void this.renderComments({ preservePanelScroll: true });
+    });
+
+    for (const type of availableTypes) {
+      const selected = this.selectedTypeFilters.includes(type);
+      const definition = this.plugin.getCommentType(type);
+      const chip = chips.createEl("button", {
+        cls: `review-comment-filter-chip review-comment-type-filter-chip ${
+          selected ? "is-selected" : "is-dimmed"
+        }`,
+        attr: {
+          type: "button",
+          "aria-pressed": selected ? "true" : "false",
+          title: `${definition.label} · ${type}`,
+        },
+      });
+      chip.createSpan({
+        text: definition.icon,
+        cls: "review-comment-filter-chip-icon",
+      });
+      chip.createSpan({
+        text: `${definition.label} ${summary.byType[type] || 0}`,
+      });
+      this.plugin.applyTypeColor(chip, type, "--review-comment-chip-color");
+      chip.addEventListener("click", () => {
+        this.selectedTypeFilters = toggleFilterValue(
+          this.selectedTypeFilters,
+          type
+        );
+        void this.renderComments({ preservePanelScroll: true });
+      });
+    }
+  }
+
+  private getAvailableTypeTags(summary: ThreadFilterSummary): string[] {
+    const configured = this.plugin.getCommentTypes().map((type) => type.tag);
+    const unknown = Object.keys(summary.byType)
+      .filter((type) => !configured.includes(type))
+      .sort((a, b) => a.localeCompare(b));
+    return [...configured, ...unknown];
   }
 
   setCommentStatus(
@@ -1663,8 +1886,9 @@ class CommentsView extends ItemView {
   ) {
     new CommentInputModal(
       this.plugin.app,
+      this.plugin.getCommentTypes(),
       entry.meta.type,
-      (body) => {
+      (body: string, typeTag: string) => {
         const editor = mdView.editor;
         const value = editor.getValue();
         try {
@@ -1674,6 +1898,7 @@ class CommentsView extends ItemView {
             value,
             replaceCommentEntryMeta(value, match, entry.index, {
               ...entry.meta,
+              type: typeTag,
               body: this.plugin.escapeCommentBody(body.trim()),
             })
           );
@@ -1685,15 +1910,18 @@ class CommentsView extends ItemView {
       },
       `编辑批注${entry.meta.id ? ` · ${entry.meta.id}` : ""}`,
       "保存修改",
-      entry.meta.body
+      entry.meta.body,
+      true,
+      "批注类型"
     ).open();
   }
 
   openReplyModal(mdView: MarkdownView, match: ParsedComment) {
     new CommentInputModal(
       this.plugin.app,
+      this.plugin.getCommentTypes(),
       COMMENT_FORMAT.defaultType,
-      (body, typeTag) => {
+      (body: string, typeTag: string) => {
         const editor = mdView.editor;
         const value = editor.getValue();
         const date = formatDate(new Date(), this.plugin.settings.dateFormat);
@@ -1724,7 +1952,8 @@ class CommentsView extends ItemView {
       `回复${match.meta.id ? ` · ${match.meta.id}` : ""}`,
       "回复",
       "",
-      true
+      true,
+      "回复类型"
     ).open();
   }
 
@@ -1848,11 +2077,14 @@ function getCommentAnchorLabel(comment: ParsedComment): string {
   return "单点批注";
 }
 
-function formatThreadTitle(entries: ParsedCommentEntry[]): string {
+function formatThreadTitle(
+  entries: ParsedCommentEntry[],
+  getTypeIcon: (typeTag: string | null | undefined) => string = () => ""
+): string {
   return entries
     .map(
       (entry) =>
-        `${entry.index + 1}. ${TYPE_ICON[entry.meta.type] || ""} ${formatThreadEntryLabel(
+        `${entry.index + 1}. ${getTypeIcon(entry.meta.type)} ${formatThreadEntryLabel(
           entry
         )}\n${entry.meta.body}`
     )
@@ -1872,10 +2104,47 @@ function formatThreadEntryLabel(entry: ParsedCommentEntry): string {
   return parts.join(" · ");
 }
 
-function formatAddCommentTitle(typeTag: string, scopeLabel = "批注"): string {
-  const label = TYPE_LABEL[typeTag] || "批注";
+function formatAddCommentTitle(
+  typeTag: string,
+  commentTypes: ReviewCommentType[],
+  scopeLabel = "批注"
+): string {
+  const label = getReviewCommentType(commentTypes, typeTag).label;
   if (label === "批注") return `添加${scopeLabel}`;
   return `添加${label}${scopeLabel}`;
+}
+
+function toggleFilterValue<T extends string>(current: T[], value: T): T[] {
+  if (value === "all") {
+    return current.includes(value) ? [] : [value];
+  }
+
+  const withoutAll = current.filter((item) => item !== "all");
+  if (withoutAll.includes(value)) {
+    return withoutAll.filter((item) => item !== value);
+  }
+  return [...withoutAll, value];
+}
+
+function normalizeSelectedStatusFilters(
+  values: CommentStatusFilter[]
+): CommentStatusFilter[] {
+  const allowed = new Set<CommentStatusFilter>(["all", "open", "closed"]);
+  const result = values.filter((value, index) => {
+    return allowed.has(value) && values.indexOf(value) === index;
+  });
+  if (result.includes("all")) return ["all"];
+  return result;
+}
+
+function withCurrentCommentType(
+  types: ReviewCommentType[],
+  typeTag: string | null | undefined
+): ReviewCommentType[] {
+  const normalized = normalizeCommentTypes(types);
+  const current = getReviewCommentType(normalized, typeTag);
+  if (normalized.some((type) => type.tag === current.tag)) return normalized;
+  return [...normalized, current];
 }
 
 class ReviewCommentsSettingTab extends PluginSettingTab {
@@ -1884,6 +2153,167 @@ class ReviewCommentsSettingTab extends PluginSettingTab {
   constructor(app: App, plugin: ReviewCommentsPlugin) {
     super(app, plugin);
     this.plugin = plugin;
+  }
+
+  private async persistCommentTypes(refresh = false) {
+    this.plugin.settings.commentTypes = normalizeCommentTypes(
+      this.plugin.settings.commentTypes
+    );
+    await this.plugin.saveSettings();
+    this.plugin.registerCommentTypeCommands();
+    this.plugin.renderFloatingBarButtons();
+    if (refresh) this.display();
+  }
+
+  private async updateCommentType(
+    index: number,
+    patch: Partial<ReviewCommentType>
+  ) {
+    const current = this.plugin.settings.commentTypes[index];
+    if (!current) return;
+    const nextPatch = { ...patch };
+    if (current.protected) {
+      delete nextPatch.tag;
+      nextPatch.protected = true;
+    }
+    this.plugin.settings.commentTypes = this.plugin.settings.commentTypes.map(
+      (type, i) => (i === index ? { ...type, ...nextPatch } : type)
+    );
+    await this.persistCommentTypes();
+  }
+
+  private renderCommentTypes(containerEl: HTMLElement) {
+    containerEl.createEl("h3", { text: "批注类型" });
+    containerEl.createEl("p", {
+      text: "每种类型都会出现在命令面板、右键菜单、回复 / 编辑弹窗、侧栏筛选和编辑器颜色中。修改命令 id 后，新命令会立即注册，不再使用的旧命令会即时移除。",
+      cls: "setting-item-description",
+    });
+
+    new Setting(containerEl)
+      .setName("新增自定义类型")
+      .setDesc("新增类型可删除；默认的 COMMENT / 批注只能编辑，不能删除。")
+      .addButton((button) =>
+        button
+          .setButtonText("新增类型")
+          .setCta()
+          .onClick(async () => {
+            this.plugin.settings.commentTypes = [
+              ...this.plugin.getCommentTypes(),
+              createNextCustomCommentType(this.plugin.getCommentTypes()),
+            ];
+            await this.persistCommentTypes(true);
+          })
+      );
+
+    const list = containerEl.createDiv({
+      cls: "review-comment-type-settings",
+    });
+
+    this.plugin.getCommentTypes().forEach((type, index) => {
+      const card = list.createDiv({ cls: "review-comment-type-setting" });
+      this.plugin.applyTypeColor(card, type.tag, "--review-comment-chip-color");
+
+      const header = card.createDiv({
+        cls: "review-comment-type-setting-header",
+      });
+      header.createSpan({
+        text: type.icon,
+        cls: "review-comment-type-setting-icon",
+      });
+      header.createSpan({
+        text: `${type.label} · ${type.tag}`,
+        cls: "review-comment-type-setting-title",
+      });
+      if (type.protected) {
+        header.createSpan({
+          text: "默认类型",
+          cls: "review-comment-type-setting-badge",
+        });
+      }
+
+      new Setting(card)
+        .setName("命令 id")
+        .setDesc(`命令面板编号：add-comment-${type.id}`)
+        .addText((text) =>
+          text.setValue(type.id).onChange(async (value) => {
+            await this.updateCommentType(index, {
+              id: sanitizeCommentTypeId(value, type.id),
+            });
+          })
+        );
+
+      new Setting(card)
+        .setName("元数据 tag")
+        .setDesc(
+          type.protected
+            ? "默认批注类型固定写入 COMMENT，确保回复和无类型批注有稳定落点。"
+            : "写入 Markdown 的 type=... 标签；建议使用大写英文、数字、下划线或连字符。"
+        )
+        .addText((text) => {
+          text.setValue(type.tag);
+          if (type.protected) {
+            text.inputEl.disabled = true;
+          } else {
+            text.onChange(async (value) => {
+              await this.updateCommentType(index, {
+                tag: sanitizeCommentTypeTag(value, type.tag),
+              });
+            });
+          }
+        });
+
+      new Setting(card)
+        .setName("显示名称")
+        .addText((text) =>
+          text.setValue(type.label).onChange(async (value) => {
+            await this.updateCommentType(index, {
+              label: sanitizeCommentTypeLabel(value, type.label),
+            });
+          })
+        );
+
+      new Setting(card)
+        .setName("Emoji")
+        .addText((text) =>
+          text.setValue(type.icon).onChange(async (value) => {
+            await this.updateCommentType(index, {
+              icon: sanitizeCommentTypeIcon(value, type.icon),
+            });
+          })
+        );
+
+      new Setting(card)
+        .setName("颜色")
+        .setDesc("使用 6 位十六进制颜色，例如 #e6be28。")
+        .addText((text) =>
+          text.setValue(type.color).onChange(async (value) => {
+            await this.updateCommentType(index, {
+              color: normalizeHexColor(value, type.color),
+            });
+            this.plugin.applyTypeColor(
+              card,
+              this.plugin.settings.commentTypes[index]?.tag || type.tag,
+              "--review-comment-chip-color"
+            );
+          })
+        );
+
+      if (!type.protected) {
+        new Setting(card)
+          .setName("删除类型")
+          .setDesc("删除后不会迁移已有 Markdown 批注；旧 type 仍会被读取为自定义未知类型。")
+          .addButton((button) =>
+            button
+              .setButtonText("删除")
+              .setWarning()
+              .onClick(async () => {
+                this.plugin.settings.commentTypes =
+                  this.plugin.getCommentTypes().filter((_, i) => i !== index);
+                await this.persistCommentTypes(true);
+              })
+          );
+      }
+    });
   }
 
   display() {
@@ -2055,16 +2485,28 @@ class ReviewCommentsSettingTab extends PluginSettingTab {
           })
       );
 
-    containerEl.createEl("h3", { text: "批注类型" });
-    const list = containerEl.createEl("ul");
-    for (const t of TYPES) {
-      const li = list.createEl("li");
-      li.textContent = `${t.icon} ${t.label} → 标签：${t.tag}（命令 / 右键菜单：添加${t.label}批注）`;
-    }
-
-    containerEl.createEl("p", {
-      text: "每种批注类型都会注册为独立命令，也会出现在编辑器右键菜单中；可在“设置 → 快捷键”中分配常用快捷键。",
-      cls: "setting-item-description",
-    });
+    this.renderCommentTypes(containerEl);
   }
+}
+
+function createNextCustomCommentType(
+  existingTypes: ReviewCommentType[]
+): ReviewCommentType {
+  const usedIds = new Set(existingTypes.map((type) => type.id));
+  const usedTags = new Set(existingTypes.map((type) => type.tag));
+  let index = 1;
+  while (
+    usedIds.has(`custom-${index}`) ||
+    usedTags.has(`CUSTOM_${index}`)
+  ) {
+    index += 1;
+  }
+
+  return {
+    id: `custom-${index}`,
+    tag: `CUSTOM_${index}`,
+    label: `自定义${index}`,
+    icon: "🏷️",
+    color: "#dddddd",
+  };
 }

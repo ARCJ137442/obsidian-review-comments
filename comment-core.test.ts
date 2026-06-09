@@ -451,7 +451,7 @@ describe("comment-core syntax compatibility", () => {
 });
 
 describe("comment-core summary and filtering", () => {
-  it("summarizes thread entries and filters them by status and type", () => {
+  it("summarizes threads and filters by root status and type", () => {
     const source = [
       "{<<一>>}{>>Argon|2026-06-08|ASK|id=RC-F1|status=open: 提问<<}{>>Codex|2026-06-08|NOTE|id=RC-F1R|status=closed: 回复<<}",
       "{<<二>>}{>>Argon|2026-06-08|NOTE|id=RC-F2|status=closed: 备注<<}",
@@ -470,19 +470,80 @@ describe("comment-core summary and filtering", () => {
     });
 
     expect(summary).toEqual({
-      total: 4,
+      total: 3,
       open: 2,
-      closed: 2,
+      closed: 1,
       byType: {
         ASK: 1,
-        NOTE: 3,
+        NOTE: 2,
       },
     });
     expect(openNotes.map((comment) => comment.anchor)).toEqual(["三"]);
-    expect(closedComments.map((comment) => comment.anchor)).toEqual(["一", "二"]);
-    expect(closedComments[0].entries.map((entry) => entry.meta.body)).toEqual([
+    expect(closedComments.map((comment) => comment.anchor)).toEqual(["二"]);
+  });
+
+  it("keeps full linear threads when their root matches filters", () => {
+    const source =
+      "{<<一>>}{>>Argon|2026-06-08|ASK|id=RC-F1|status=open: 提问<<}{>>Codex|2026-06-08|NOTE|id=RC-F1R|status=closed: 回复<<}";
+    const comments = findComments(source);
+
+    const [match] = filterComments(comments, {
+      status: "open",
+      type: "ASK",
+    });
+
+    expect(match.entries.map((entry) => entry.meta.body)).toEqual([
+      "提问",
       "回复",
     ]);
+  });
+
+  it("treats empty filters and all chips as showing every thread", () => {
+    const source = [
+      "{一}{>>author=A;date=2026-06-08;type=ASK;id=RC-F1: 提问<<}",
+      "{二}{>>author=B;date=2026-06-08;type=NOTE;id=RC-F2;status=closed: 备注<<}",
+    ].join("\n");
+    const comments = findComments(source);
+
+    const emptyFilters = filterComments(comments, {});
+    const allFilters = filterComments(comments, {
+      status: ["all", "closed"],
+      type: ["all", "NOTE"],
+    });
+
+    expect(emptyFilters.map((comment) => comment.anchor)).toEqual(["一", "二"]);
+    expect(allFilters.map((comment) => comment.anchor)).toEqual(["一", "二"]);
+  });
+
+  it("applies OR within status/type rows and AND between rows", () => {
+    const source = [
+      "{一}{>>author=A;date=2026-06-08;type=ASK;id=RC-F1: 提问<<}",
+      "{二}{>>author=B;date=2026-06-08;type=NOTE;id=RC-F2;status=closed: 关闭备注<<}",
+      "{三}{>>author=C;date=2026-06-08;type=NOTE;id=RC-F3: 打开备注<<}",
+      "{四}{>>author=D;date=2026-06-08;type=EDIT;id=RC-F4;status=closed: 修改<<}",
+    ].join("\n");
+    const comments = findComments(source);
+
+    const result = filterComments(comments, {
+      status: ["open", "closed"],
+      type: ["NOTE"],
+    });
+
+    expect(result.map((comment) => comment.anchor)).toEqual(["二", "三"]);
+  });
+
+  it("filters by the root comment type instead of reply types", () => {
+    const source = [
+      "{一}{>>author=A;date=2026-06-08;type=ASK;id=RC-F1: 提问<<}{>>author=B;date=2026-06-08;type=NOTE;id=RC-F1R: 备注回复<<}",
+      "{二}{>>author=C;date=2026-06-08;type=NOTE;id=RC-F2: 根备注<<}",
+    ].join("\n");
+    const comments = findComments(source);
+
+    const result = filterComments(comments, {
+      type: ["NOTE"],
+    });
+
+    expect(result.map((comment) => comment.anchor)).toEqual(["二"]);
   });
 });
 

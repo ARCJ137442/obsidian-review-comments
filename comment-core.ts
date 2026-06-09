@@ -61,8 +61,8 @@ export interface ParsedComment {
 }
 
 export interface CommentFilters {
-  status: CommentStatusFilter;
-  type: string;
+  status?: CommentStatusFilter | CommentStatusFilter[];
+  type?: string | string[];
 }
 
 export interface CommentSummary {
@@ -543,17 +543,16 @@ export function lintComments(
 export function summarizeComments(comments: ParsedComment[]): CommentSummary {
   return comments.reduce<CommentSummary>(
     (summary, comment) => {
-      summary.total += comment.entries.length;
-      for (const entry of comment.entries) {
-        if (entry.meta.status === "closed") {
-          summary.closed += 1;
-        } else {
-          summary.open += 1;
-        }
-
-        const type = entry.meta.type || COMMENT_FORMAT.defaultType;
-        summary.byType[type] = (summary.byType[type] || 0) + 1;
+      summary.total += 1;
+      const status = getThreadStatus(comment);
+      if (status === "closed") {
+        summary.closed += 1;
+      } else {
+        summary.open += 1;
       }
+
+      const type = comment.meta.type || COMMENT_FORMAT.defaultType;
+      summary.byType[type] = (summary.byType[type] || 0) + 1;
       return summary;
     },
     { total: 0, open: 0, closed: 0, byType: {} }
@@ -564,23 +563,29 @@ export function filterComments(
   comments: ParsedComment[],
   filters: CommentFilters
 ): ParsedComment[] {
-  return comments
-    .map((comment) => ({
-      ...comment,
-      entries: comment.entries.filter((entry) => {
-        const statusMatches =
-          filters.status === "all" || entry.meta.status === filters.status;
-        const typeMatches =
-          filters.type === "all" || entry.meta.type === filters.type;
-        return statusMatches && typeMatches;
-      }),
-    }))
-    .filter((comment) => comment.entries.length > 0)
-    .map((comment) => ({
-      ...comment,
-      metaSource: comment.entries[0].metaSource,
-      meta: comment.entries[0].meta,
-    }));
+  const statusFilter = normalizeFilterValues(filters.status);
+  const typeFilter = normalizeFilterValues(filters.type);
+
+  return comments.filter((comment) => {
+    const threadStatus = getThreadStatus(comment);
+    const threadType = comment.meta.type || COMMENT_FORMAT.defaultType;
+    const statusMatches =
+      statusFilter === null || statusFilter.has(threadStatus);
+    const typeMatches = typeFilter === null || typeFilter.has(threadType);
+    return statusMatches && typeMatches;
+  });
+}
+
+function normalizeFilterValues<T extends string>(
+  value: T | T[] | undefined
+): Set<T> | null {
+  const values = Array.isArray(value)
+    ? value
+    : value
+      ? [value]
+      : [];
+  if (values.length === 0 || values.includes("all" as T)) return null;
+  return new Set(values);
 }
 
 export function replaceCommentStatus(
