@@ -96,6 +96,19 @@ See `protocol.md` for the full protocol and edge cases.
    Markdown evidence.
 7. Report what was applied, what remains unresolved, and any ambiguity.
 
+## Self-Check Before Finishing
+
+- Confirm no fenced code block was parsed or rewritten as a review comment.
+- Confirm every edited thread remains one adjacent linear sequence:
+  `{anchor}{>>first<<}{>>second<<}`.
+- Confirm point comments use `{}{>>...<<}` and that bare `{}` / `{}{}{}` remains
+  ordinary text.
+- Confirm heading comments are stored below headings rather than inside heading
+  text.
+- Confirm table/list/callout/blockquote replies stayed compact when line breaks
+  would damage the raw Markdown structure.
+- Confirm unresolved comments were preserved, including legacy compatible syntax.
+
 ## Writing New Comments
 
 When the user asks you to add a visible Review Comments annotation:
@@ -124,6 +137,8 @@ When the user asks you to add a visible Review Comments annotation:
 
 ## References
 
+- `README.md` - human-facing overview for maintainers and users.
 - `protocol.md` - Markdown annotation protocol.
 - `upstream.md` - plugin compatibility and source baseline.
+- `CHANGELOG.md` - bundled skill change history.
 - `examples/` - small raw Markdown examples for agent tests.
