@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   appendReplyComment,
+  exportCommentsMarkdown,
   filterComments,
   findComments,
   formatComment,
@@ -494,6 +495,84 @@ describe("comment-core linting", () => {
         severity: "info",
       }),
     ]);
+  });
+});
+
+describe("comment-core export", () => {
+  it("exports a simple current-file comment list for human review", () => {
+    const source =
+      "正文 {传输函子}{>>author=Argon;date=2026-06-09;type=ASK;id=RC-A: **比较奇怪**<<} 后文";
+
+    const markdown = exportCommentsMarkdown(findComments(source), {
+      format: "simple",
+      filePath: "notes/example.md",
+      sourceText: source,
+    });
+
+    expect(markdown).toBe(
+      [
+        "# 当前文件批注清单",
+        "",
+        "## 0",
+        "",
+        "### 批注对象",
+        "",
+        "> 传输函子",
+        "",
+        "### 批注正文",
+        "",
+        "**比较奇怪**",
+      ].join("\n")
+    );
+  });
+
+  it("keeps every linear reply entry in simple exports", () => {
+    const source =
+      "{anchor}{>>first<<}{>>author=Codex;date=2026-06-09;type=NOTE;id=RC-2: second<<}";
+
+    const markdown = exportCommentsMarkdown(findComments(source), {
+      format: "simple",
+    });
+
+    expect(markdown).toContain("#### 0.0\n\nfirst");
+    expect(markdown).toContain("#### 0.1\n\nsecond");
+  });
+
+  it("exports full metadata for debate and audit workflows", () => {
+    const source =
+      "前文\n{对象}{>>author=Argon;date=2026-06-09;type=ASK;id=RC-A;scope=heading;target=H1: 第一条<<}{>>author=Codex;date=2026-06-09;type=NOTE;id=RC-B;status=closed: 第二条<<}";
+
+    const markdown = exportCommentsMarkdown(findComments(source), {
+      format: "full",
+      filePath: "research-board/RT-44.md",
+      sourceText: source,
+    });
+
+    expect(markdown).toContain("- 文件：`research-board/RT-44.md`");
+    expect(markdown).toContain("- 批注线程数：1");
+    expect(markdown).toContain("- 线程序号：0");
+    expect(markdown).toContain("- 线程状态：`open`");
+    expect(markdown).toContain("- 条目：0.1");
+    expect(markdown).toContain("- id：`RC-B`");
+    expect(markdown).toContain("- status：`closed`");
+    expect(markdown).toContain("- type：`NOTE`");
+    expect(markdown).toContain("- attrs：scope=heading; target=H1");
+    expect(markdown).toMatch(/- 位置：`L2:C\d+-L2:C\d+`/);
+  });
+
+  it("exports a stable empty report when no comments exist", () => {
+    const markdown = exportCommentsMarkdown([], { format: "full" });
+
+    expect(markdown).toBe(
+      [
+        "# 当前文件批注清单",
+        "",
+        "- 文件：`（未知）`",
+        "- 批注线程数：0",
+        "",
+        "当前文件没有批注。",
+      ].join("\n")
+    );
   });
 });
 

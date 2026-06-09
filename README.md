@@ -5,6 +5,8 @@
 
 面向 Obsidian 的 Notion 风格批注插件。你可以选中文本后通过右键菜单、命令面板、快捷键或可选的悬浮工具条添加批注。批注直接存储在 `.md` 文件中，所以 Claude / GPT 等 Agent 可以直接读取 Markdown 源文件并应用修改，不需要额外导出。
 
+需要人工审阅或“批注辩论”时，也可以把当前文件的批注线程复制成 Markdown 清单：默认简单版从 `# 当前文件批注清单` 开始，并按 `批注对象` / `批注正文` 分节；完整版会额外带文件、位置、状态、类型、作者、日期和 id。
+
 ## 批注格式
 
 ```markdown
@@ -68,12 +70,15 @@ ln -s "$(pwd)" "$VAULT/.obsidian/plugins/review-comments"
 
 - 选中文本 -> 命令面板 -> `Review Comments: Add comment to selection`
 - 命令面板 -> `Review Comments: 检查当前文件批注`
+- 命令面板 -> `Review Comments: 复制当前文件批注清单`
 - 选中文本 -> 可选悬浮工具条类型按钮
 - 绑定快捷键，推荐 `Cmd + Shift + M`
 
 悬浮工具条可以在插件设置中关闭，不影响右键菜单、命令面板或快捷键。
 
 `检查当前文件批注` 会扫描当前 Markdown 文件中的批注协议问题，并用 Notice + 弹窗列出错误、警告与提示。当前检查覆盖重复 `id`、旧 `replyTo`、半截 `{>>` / `<<}` 标记、代码块内疑似批注、裸 `{}` / `{}{}{}` 伪批注、标题内嵌范围批注、列表 / 表格 / 引用 / callout 内多行风险、表格内旧式 `|` 元数据，以及缺少 `id` 的最小草稿提示。
+
+`复制当前文件批注清单` 会把当前文件批注线程复制到剪贴板。设置页的 `复制批注清单格式` 可在 `简单版` 与 `完整版` 之间切换；简单版适合直接粘贴给人类或 Agent 继续审阅，完整版适合归档、审计和定位。
 
 ## 侧栏面板
 
@@ -84,6 +89,7 @@ ln -s "$(pwd)" "$VAULT/.obsidian/plugins/review-comments"
 - 单击锚定原文可以跳转到文档中的对应位置。
 - 双击批注正文可以编辑原批注，确认后直接写回 Markdown 源文件。
 - 锚定原文和批注正文都会做基础 Markdown 渲染。
+- `复制清单` 会按设置页选择的格式把当前文件批注复制为 Markdown。
 - `回复` 会在当前线性线程末尾追加新的 `{>>...<<}` block。
 - `关闭` 会把线程写为 `status=closed`，但保留 Markdown 批注证据。
 - closed 批注默认折叠。可以用 `展开` 查看，用 `打开` 恢复为 open 状态。
@@ -109,6 +115,7 @@ npm test      # parser and source-editing regression tests
 
 ## 变更记录
 
+- 2026-06-09：新增 `复制当前文件批注清单` 命令与侧栏 `复制清单` 按钮。支持 `简单版 / 完整版` 两种导出格式：简单版按 `# 当前文件批注清单`、`批注对象`、`批注正文` 组织，完整版追加文件、位置、线程、状态、类型、作者、日期、id 与自定义属性。验证：`npm test` 47/47 PASS，`npx tsc --noEmit` PASS，`npm run build` PASS，并已只部署 `main.js`、`manifest.json`、`styles.css` 到测试 vault，未覆盖 `data.json`。
 - 2026-06-09：新增 `检查当前文件批注` 命令。可在当前文件中检查重复 `id`、旧 `replyTo`、孤立 metadata 标记、代码块内疑似批注、裸 `{}` 边界、标题内嵌批注、行敏感结构多行风险、表格 pipe metadata 风险和缺少 `id` 的最小草稿提示。验证：`npm test` 43/43 PASS，`npx tsc --noEmit` PASS，`npm run build` PASS，并已只部署 `main.js`、`manifest.json`、`styles.css` 到测试 vault，未覆盖 `data.json`。
 - 2026-06-09：修复多行批注正文折叠。多行锚定文本继续跨行高亮 / 下划线；多行批注正文在 Live Preview 中折叠后不再残留空白行。验证：`npm test` 36/36 PASS，`npx tsc --noEmit` PASS，`npm run build` PASS，并已在 `ExoNet-Reticulum-rt44-migration` 测试 vault 中人工确认效果正常。
 

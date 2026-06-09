@@ -5,6 +5,8 @@
 
 Notion-style review comments for Obsidian. Select text, add a comment from the right-click menu, command palette, hotkey, or optional floating toolbar. Comments are stored directly in `.md` files, so Claude / GPT can read the file and apply the requested edits without any export step.
 
+For human review or comment debates, the plugin can also copy the current file's comment threads as a Markdown list. The simple format starts with `# 当前文件批注清单` and separates each item into `批注对象` and `批注正文`; the full format adds file, location, status, type, author, date, and id metadata.
+
 ## Comment format
 
 ```markdown
@@ -68,12 +70,15 @@ Alternatively:
 
 - Select text -> Command palette -> `Review Comments: Add comment to selection`
 - Command palette -> `Review Comments: 检查当前文件批注`
+- Command palette -> `Review Comments: 复制当前文件批注清单`
 - Select text -> optional floating toolbar type button
 - Assign a hotkey, recommended: `Cmd + Shift + M`
 
 The floating toolbar can be disabled in plugin settings without affecting the right-click menu, commands, or hotkeys.
 
 `检查当前文件批注` scans the current Markdown file for protocol issues and reports errors, warnings, and informational hints in a Notice plus modal. It currently covers duplicate `id`, legacy `replyTo`, orphan `{>>` / `<<}` markers, suspected comments inside fenced code blocks, bare `{}` / `{}{}{}` edge cases, range comments embedded in headings, multiline comments in line-sensitive Markdown structures, legacy pipe metadata inside tables, and minimal drafts without `id`.
+
+`复制当前文件批注清单` copies the current file's comment threads to the clipboard. The `复制批注清单格式` setting switches between `简单版` and `完整版`.
 
 ## Side panel
 
@@ -84,6 +89,7 @@ Open the comments panel from the left ribbon speech-bubble icon or via `Review C
 - Click the anchored source text to jump to the corresponding location in the document.
 - Double-click the comment body to edit the existing comment in place.
 - The anchored text and comment body are rendered as basic Markdown.
+- `复制清单` copies the current file's comments as Markdown using the configured export format.
 - `回复` appends a new `{>>...<<}` block at the end of the selected linear thread.
 - `关闭` sets `status=closed` for the comment thread while preserving the Markdown comment.
 - Closed comments are folded by default. Use `展开` to inspect them and `打开` to restore the thread to open state.
@@ -107,6 +113,7 @@ npm test      # parser and source-editing regression tests
 
 ## Changelog
 
+- 2026-06-09: Added `复制当前文件批注清单` and the side-panel `复制清单` button. Supports simple and full Markdown export formats for review, debate, and audit workflows. Validation: `npm test` 47/47 PASS, `npx tsc --noEmit` PASS, `npm run build` PASS, deployed only `main.js`, `manifest.json`, and `styles.css` to the test vault without overwriting `data.json`.
 - 2026-06-09: Added the `检查当前文件批注` command for current-file comment protocol linting. Validation: `npm test` 43/43 PASS, `npx tsc --noEmit` PASS, `npm run build` PASS, deployed only `main.js`, `manifest.json`, and `styles.css` to the test vault without overwriting `data.json`.
 
 ## License

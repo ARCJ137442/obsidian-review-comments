@@ -22,6 +22,7 @@ import {
 } from "@codemirror/view";
 import { EditorState, Range, StateEffect, StateField } from "@codemirror/state";
 import {
+  CommentExportFormat,
   CommentLintIssue,
   CommentStatusFilter,
   ParsedComment,
@@ -29,6 +30,7 @@ import {
   ParsedMeta,
   appendReplyComment,
   containsCommentMarkup,
+  exportCommentsMarkdown,
   filterComments,
   findComments,
   formatComment,
@@ -47,6 +49,7 @@ interface ReviewCommentsSettings {
   showFloatingBar: boolean;
   foldEditorMarkup: boolean;
   highlightAnchors: boolean;
+  commentExportFormat: CommentExportFormat;
 }
 
 const DEFAULT_SETTINGS: ReviewCommentsSettings = {
@@ -56,6 +59,7 @@ const DEFAULT_SETTINGS: ReviewCommentsSettings = {
   showFloatingBar: true,
   foldEditorMarkup: true,
   highlightAnchors: false,
+  commentExportFormat: "simple",
 };
 
 const VIEW_TYPE_COMMENTS = "review-comments-view";
@@ -240,6 +244,12 @@ export default class ReviewCommentsPlugin extends Plugin {
       editorCallback: (editor: Editor) =>
         this.lintCurrentFileComments(editor),
     });
+    this.addCommand({
+      id: "export-current-file-comments",
+      name: "复制当前文件批注清单",
+      editorCallback: (editor: Editor) =>
+        void this.copyCurrentFileCommentList(editor),
+    });
     this.registerEvent(
       this.app.workspace.on("editor-menu", (menu, editor) => {
         menu.addSeparator();
@@ -405,6 +415,30 @@ export default class ReviewCommentsPlugin extends Plugin {
       );
     }
     new CommentLintModal(this.app, issues).open();
+  }
+
+  async copyCurrentFileCommentList(editor: Editor, filePath?: string) {
+    const activeMarkdown = this.app.workspace.getActiveViewOfType(MarkdownView);
+    const resolvedPath =
+      filePath || activeMarkdown?.file?.path || this.app.workspace.getActiveFile()?.path || "";
+    const text = editor.getValue();
+    const comments = findComments(text);
+    const markdown = exportCommentsMarkdown(comments, {
+      format: this.settings.commentExportFormat,
+      filePath: resolvedPath,
+      sourceText: text,
+    });
+
+    try {
+      await copyTextToClipboard(markdown);
+      new Notice(
+        comments.length === 0
+          ? "当前文件没有批注，已复制空清单"
+          : `已复制 ${comments.length} 个批注线程的清单`
+      );
+    } catch (error) {
+      new Notice(error instanceof Error ? error.message : "复制批注清单失败");
+    }
   }
 
   async activateView() {
@@ -609,6 +643,25 @@ function formatLintSeverity(severity: CommentLintIssue["severity"]): string {
   if (severity === "error") return "错误";
   if (severity === "warning") return "警告";
   return "提示";
+}
+
+async function copyTextToClipboard(text: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  textarea.style.top = "0";
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+  const copied = document.execCommand("copy");
+  textarea.remove();
+  if (!copied) throw new Error("复制批注清单失败");
 }
 
 function isPlainSourceMode(view: EditorView): boolean {
@@ -947,7 +1000,7 @@ class CommentsView extends ItemView {
       this.typeFilter = "all";
     }
 
-    this.renderFilterBar(container, summary, availableTypes);
+    this.renderFilterBar(container, summary, availableTypes, mdView);
 
     const visibleMatches = filterComments(matches, {
       status: this.statusFilter,
@@ -1108,7 +1161,8 @@ class CommentsView extends ItemView {
   renderFilterBar(
     container: HTMLElement,
     summary: ReturnType<typeof summarizeComments>,
-    availableTypes: string[]
+    availableTypes: string[],
+    mdView: MarkdownView
   ) {
     const filterEl = container.createDiv({ cls: "review-comment-filterbar" });
 
@@ -1166,6 +1220,19 @@ class CommentsView extends ItemView {
     typeSelect.addEventListener("change", () => {
       this.typeFilter = typeSelect.value;
       void this.renderComments();
+    });
+
+    const actions = filterEl.createDiv({ cls: "review-comment-toolbar" });
+    const exportBtn = actions.createEl("button", {
+      text: "复制清单",
+      cls: "review-comment-action-btn",
+    });
+    exportBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      void this.plugin.copyCurrentFileCommentList(
+        mdView.editor,
+        mdView.file?.path
+      );
     });
   }
 
@@ -1404,6 +1471,21 @@ class ReviewCommentsSettingTab extends PluginSettingTab {
           .setValue(this.plugin.settings.dateFormat)
           .onChange(async (value: string) => {
             this.plugin.settings.dateFormat = value as "iso" | "japanese";
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("复制批注清单格式")
+      .setDesc("简单版适合人类审阅与批注辩论；完整版会额外带文件、位置、状态、类型、作者、日期和 id。")
+      .addDropdown((dd) =>
+        dd
+          .addOption("simple", "简单版")
+          .addOption("full", "完整版")
+          .setValue(this.plugin.settings.commentExportFormat)
+          .onChange(async (value: string) => {
+            this.plugin.settings.commentExportFormat =
+              value as CommentExportFormat;
             await this.plugin.saveSettings();
           })
       );

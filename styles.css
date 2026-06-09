@@ -143,6 +143,13 @@
   gap: 8px;
 }
 
+.review-comment-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
 .review-comment-filter-select {
   width: 100%;
   min-width: 0;

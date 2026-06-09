@@ -5,6 +5,7 @@ export type CommentSyntax =
   | "plain-anchor";
 export type CommentStatus = "open" | "closed";
 export type CommentStatusFilter = "all" | CommentStatus;
+export type CommentExportFormat = "simple" | "full";
 
 export const COMMENT_FORMAT = {
   defaultSyntax: "plain-anchor" as CommentSyntax,
@@ -75,6 +76,12 @@ export interface CommentLintIssue {
   line: number;
   column: number;
   excerpt: string;
+}
+
+export interface CommentExportOptions {
+  format?: CommentExportFormat;
+  filePath?: string;
+  sourceText?: string;
 }
 
 interface AnchorMatch {
@@ -249,6 +256,64 @@ export function findComments(text: string): ParsedComment[] {
   }
 
   return comments;
+}
+
+export function exportCommentsMarkdown(
+  comments: ParsedComment[],
+  options: CommentExportOptions = {}
+): string {
+  const format = options.format || "simple";
+  const lines = ["# 当前文件批注清单", ""];
+
+  if (format === "full") {
+    lines.push(`- 文件：${formatInlineCode(options.filePath || "（未知）")}`);
+    lines.push(`- 批注线程数：${comments.length}`);
+    lines.push("");
+  }
+
+  if (comments.length === 0) {
+    lines.push("当前文件没有批注。");
+    return lines.join("\n").trimEnd();
+  }
+
+  comments.forEach((comment, threadIndex) => {
+    lines.push(`## ${threadIndex}`, "");
+
+    if (format === "full") {
+      lines.push("### 元数据", "");
+      lines.push(`- 文件：${formatInlineCode(options.filePath || "（未知）")}`);
+      lines.push(`- 线程序号：${threadIndex}`);
+      lines.push(`- 线程状态：${formatInlineCode(getThreadStatus(comment))}`);
+      lines.push(`- 语法：${formatInlineCode(comment.syntax)}`);
+      lines.push(`- 条目数：${comment.entries.length}`);
+      lines.push(
+        `- 位置：${formatInlineCode(
+          getLocationSummary(options.sourceText, comment.offset, comment.end)
+        )}`
+      );
+      lines.push("");
+    }
+
+    lines.push("### 批注对象", "");
+    lines.push(formatBlockquote(getExportAnchorLabel(comment)), "");
+    lines.push("### 批注正文", "");
+
+    if (comment.entries.length === 1 && format === "simple") {
+      lines.push(formatMarkdownBody(comment.entries[0].meta.body), "");
+      return;
+    }
+
+    comment.entries.forEach((entry) => {
+      lines.push(`#### ${threadIndex}.${entry.index}`, "");
+      if (format === "full") {
+        lines.push(...formatEntryMetadata(entry, threadIndex, options.sourceText));
+        lines.push("");
+      }
+      lines.push(formatMarkdownBody(entry.meta.body), "");
+    });
+  });
+
+  return lines.join("\n").trimEnd();
 }
 
 export function lintComments(text: string): CommentLintIssue[] {
@@ -543,6 +608,108 @@ export function generateCommentId(date: Date = new Date()): string {
   const ss = String(date.getSeconds()).padStart(2, "0");
   const suffix = Math.random().toString(36).slice(2, 6).toUpperCase();
   return `RC-${y}${m}${d}-${hh}${mm}${ss}-${suffix}`;
+}
+
+function getExportAnchorLabel(comment: ParsedComment): string {
+  if (comment.anchor) return comment.anchor;
+  if (comment.meta.attrs.scope === "heading") {
+    return `标题批注：${comment.meta.attrs.target || "未命名标题"}`;
+  }
+  return "单点批注";
+}
+
+function getThreadStatus(comment: ParsedComment): CommentStatus {
+  return comment.entries.some((entry) => entry.meta.status === "open")
+    ? "open"
+    : "closed";
+}
+
+function formatMarkdownBody(body: string): string {
+  return body.trim() || "（空）";
+}
+
+function formatBlockquote(markdown: string): string {
+  const source = markdown.trim() || "（空）";
+  return source
+    .split(/\r?\n/)
+    .map((line) => `> ${line}`)
+    .join("\n");
+}
+
+function formatEntryMetadata(
+  entry: ParsedCommentEntry,
+  threadIndex: number,
+  sourceText?: string
+): string[] {
+  const meta = entry.meta;
+  const customAttrs = Object.entries(meta.attrs)
+    .filter(([key, value]) => {
+      if (!value) return false;
+      return ![
+        COMMENT_FORMAT.metadataKeys.id,
+        COMMENT_FORMAT.metadataKeys.status,
+        COMMENT_FORMAT.metadataKeys.replyTo,
+        COMMENT_FORMAT.metadataKeys.legacyReplyTo,
+      ].includes(key);
+    })
+    .sort(([a], [b]) => a.localeCompare(b));
+
+  const lines = [
+    `- 条目：${threadIndex}.${entry.index}`,
+    `- id：${formatInlineCode(meta.id || "（无）")}`,
+    `- status：${formatInlineCode(meta.status)}`,
+    `- type：${formatInlineCode(meta.type || COMMENT_FORMAT.defaultType)}`,
+    `- author：${meta.author || "（无）"}`,
+    `- date：${meta.date || "（无）"}`,
+    `- 位置：${formatInlineCode(
+      getLocationSummary(sourceText, entry.offset, entry.end)
+    )}`,
+  ];
+
+  if (meta.replyTo) {
+    lines.push(`- replyTo：${formatInlineCode(meta.replyTo)}`);
+  }
+
+  if (customAttrs.length > 0) {
+    lines.push(
+      `- attrs：${customAttrs
+        .map(([key, value]) => `${key}=${value}`)
+        .join("; ")}`
+    );
+  }
+
+  return lines;
+}
+
+function getLocationSummary(
+  sourceText: string | undefined,
+  offset: number,
+  end: number
+): string {
+  if (!sourceText) return `offset ${offset}-${end}`;
+  const start = getLineColumn(sourceText, offset);
+  const finish = getLineColumn(sourceText, end);
+  return `L${start.line}:C${start.column}-L${finish.line}:C${finish.column}`;
+}
+
+function getLineColumn(
+  text: string,
+  offset: number
+): { line: number; column: number } {
+  const safeOffset = Math.max(0, Math.min(offset, text.length));
+  let line = 1;
+  let lineStart = 0;
+  for (let i = 0; i < safeOffset; i += 1) {
+    if (text.charCodeAt(i) === 10) {
+      line += 1;
+      lineStart = i + 1;
+    }
+  }
+  return { line, column: safeOffset - lineStart + 1 };
+}
+
+function formatInlineCode(value: string): string {
+  return `\`${value.replace(/`/g, "\\`")}\``;
 }
 
 function collectMetaEntries(
