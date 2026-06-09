@@ -146,6 +146,34 @@ describe("comment-core parsing", () => {
     expect(thread.full).toBe(source);
   });
 
+  it("keeps legacy critic threads with semicolon replies as one card source", () => {
+    const source =
+      "旧高亮格式：{==旧高亮锚点==}{>>GPT-5.5·Codex|2026-06-09|NOTE|id=RC-TRY-20260609-0020: 这是旧高亮原始批注<<}{>>author=Argon;date=2026-06-09;type=NOTE;id=RC-20260609-224334-DWTV: 回复一下<<}{>>author=Argon;date=2026-06-09;type=NOTE;id=RC-20260609-224437-MVNJ: 再回复一下<<}";
+
+    const comments = findComments(source);
+
+    expect(comments).toHaveLength(1);
+    expect(comments[0].syntax).toBe("critic");
+    expect(comments[0].anchor).toBe("旧高亮锚点");
+    expect(comments[0].entries.map((entry) => entry.meta.id)).toEqual([
+      "RC-TRY-20260609-0020",
+      "RC-20260609-224334-DWTV",
+      "RC-20260609-224437-MVNJ",
+    ]);
+  });
+
+  it("keeps hash-anchor threads with semicolon replies as one card source", () => {
+    const source =
+      "过渡格式：{=#过渡hash格式#=}{>>GPT-5.5·Codex|2026-06-09|ASK|id=RC-TRY-20260609-0030: hash 原始批注<<}{>>author=Argon;date=2026-06-09;type=COMMENT;id=RC-20260609-224500-HASH: hash 回复<<}";
+
+    const comments = findComments(source);
+
+    expect(comments).toHaveLength(1);
+    expect(comments[0].syntax).toBe("hash-anchor");
+    expect(comments[0].anchor).toBe("过渡hash格式");
+    expect(comments[0].entries).toHaveLength(2);
+  });
+
   it("parses body-only human draft comments without requiring metadata ids", () => {
     const source = "{<<原文>>}{>>批注<<}";
 
@@ -616,6 +644,29 @@ describe("comment-core export", () => {
     expect(markdown).toContain("#### 0.1\n\nsecond");
   });
 
+  it("exports a minimal text flow for quick human review", () => {
+    const source =
+      "{被批注文本}{>>批注文本<<}{>>连续回复<<}\n\n{被批注文本2}{>>批注文本2<<}";
+
+    const markdown = exportCommentsMarkdown(findComments(source), {
+      format: "minimal",
+    });
+
+    expect(markdown).toBe(
+      [
+        "> 被批注文本",
+        "",
+        "批注文本",
+        "",
+        "连续回复",
+        "",
+        "> 被批注文本2",
+        "",
+        "批注文本2",
+      ].join("\n")
+    );
+  });
+
   it("exports full metadata for debate and audit workflows", () => {
     const source =
       "前文\n{对象}{>>author=Argon;date=2026-06-09;type=ASK;id=RC-A;scope=heading;target=H1: 第一条<<}{>>author=Codex;date=2026-06-09;type=NOTE;id=RC-B;status=closed: 第二条<<}";
@@ -824,6 +875,7 @@ describe("comment-core editing", () => {
     );
     const [updated] = findComments(next);
     expect(updated.entries).toHaveLength(2);
+    expect(updated.entries[1].meta.type).toBe("NOTE");
     expect(updated.entries[1].meta.replyTo).toBeUndefined();
   });
 

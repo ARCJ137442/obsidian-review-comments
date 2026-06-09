@@ -20,7 +20,13 @@ import {
   ViewUpdate,
   WidgetType,
 } from "@codemirror/view";
-import { EditorState, Range, StateEffect, StateField } from "@codemirror/state";
+import {
+  ChangeSet,
+  EditorState,
+  Range,
+  StateEffect,
+  StateField,
+} from "@codemirror/state";
 import {
   COMMENT_FORMAT,
   COMMENT_SYNTAXES,
@@ -125,26 +131,29 @@ interface HeadingCommentContext {
 }
 
 class CommentInputModal extends Modal {
-  private readonly typeTag: string;
-  private readonly onSubmit: (body: string) => void;
+  private selectedTypeTag: string;
+  private readonly onSubmit: (body: string, typeTag: string) => void;
   private readonly titleText: string;
   private readonly submitText: string;
   private readonly initialBody: string;
+  private readonly showTypeSelector: boolean;
 
   constructor(
     app: App,
     typeTag: string,
-    onSubmit: (body: string) => void,
+    onSubmit: (body: string, typeTag: string) => void,
     titleText?: string,
     submitText?: string,
-    initialBody?: string
+    initialBody?: string,
+    showTypeSelector?: boolean
   ) {
     super(app);
-    this.typeTag = typeTag;
+    this.selectedTypeTag = typeTag;
     this.onSubmit = onSubmit;
-    this.titleText = titleText || formatAddCommentTitle(this.typeTag);
+    this.titleText = titleText || formatAddCommentTitle(this.selectedTypeTag);
     this.submitText = submitText || "添加批注";
     this.initialBody = initialBody || "";
+    this.showTypeSelector = Boolean(showTypeSelector);
   }
 
   onOpen() {
@@ -152,6 +161,10 @@ class CommentInputModal extends Modal {
     contentEl.empty();
     contentEl.addClass("review-comment-modal");
     this.setTitle(this.titleText);
+
+    if (this.showTypeSelector) {
+      this.renderTypeSelector(contentEl);
+    }
 
     contentEl.createEl("p", {
       text: "支持多行和项目符号，内容会直接写入 Markdown。",
@@ -189,8 +202,52 @@ class CommentInputModal extends Modal {
   }
 
   private submit(body: string) {
-    this.onSubmit(body);
+    this.onSubmit(body, this.selectedTypeTag);
     this.close();
+  }
+
+  private renderTypeSelector(contentEl: HTMLElement) {
+    const selector = contentEl.createDiv({
+      cls: "review-comment-modal-type-selector",
+    });
+    selector.createEl("span", {
+      text: "回复类型",
+      cls: "review-comment-modal-type-label",
+    });
+    const options = selector.createDiv({
+      cls: "review-comment-modal-type-options",
+    });
+    const buttons: HTMLButtonElement[] = [];
+    const updateSelection = () => {
+      for (const button of buttons) {
+        const isSelected = button.dataset.type === this.selectedTypeTag;
+        button.toggleClass("is-selected", isSelected);
+        button.setAttr("aria-pressed", isSelected ? "true" : "false");
+      }
+    };
+
+    for (const type of TYPES) {
+      const button = options.createEl("button", {
+        cls: "review-comment-modal-type-option",
+        attr: {
+          type: "button",
+          "data-type": type.tag,
+          "aria-pressed": type.tag === this.selectedTypeTag ? "true" : "false",
+        },
+      });
+      button.createSpan({
+        text: type.icon,
+        cls: "review-comment-modal-type-icon",
+      });
+      button.createSpan({ text: type.label });
+      button.addEventListener("click", () => {
+        this.selectedTypeTag = type.tag;
+        updateSelection();
+      });
+      buttons.push(button);
+    }
+
+    updateSelection();
   }
 }
 
@@ -287,8 +344,23 @@ export default class ReviewCommentsPlugin extends Plugin {
       editorCallback: (editor: Editor) =>
         void this.copyCurrentFileCommentList(editor),
     });
+    this.addCommand({
+      id: "reveal-current-comment-in-panel",
+      name: "在批注栏中定位当前批注",
+      editorCallback: (editor: Editor) =>
+        void this.revealCurrentCommentInPanel(editor),
+    });
     this.registerEvent(
       this.app.workspace.on("editor-menu", (menu, editor) => {
+        if (this.findCommentNearEditorCursor(editor)) {
+          menu.addItem((item) =>
+            item
+              .setTitle("在批注栏中定位")
+              .setIcon("crosshair")
+              .setSection("review-comments")
+              .onClick(() => void this.revealCurrentCommentInPanel(editor))
+          );
+        }
         menu.addSeparator();
         menu.addItem((item) =>
           item
@@ -494,19 +566,49 @@ export default class ReviewCommentsPlugin extends Plugin {
     }
   }
 
-  async activateView() {
+  findCommentNearEditorCursor(editor: Editor): ParsedComment | null {
+    const comments = findComments(editor.getValue(), this.getParseOptions());
+    if (comments.length === 0) return null;
+
+    const from = editor.posToOffset(editor.getCursor("from"));
+    const to = editor.posToOffset(editor.getCursor("to"));
+    return findCommentInRange(comments, Math.min(from, to), Math.max(from, to));
+  }
+
+  async revealCurrentCommentInPanel(editor: Editor) {
+    const match = this.findCommentNearEditorCursor(editor);
+    if (!match) {
+      new Notice("光标不在批注范围内");
+      return;
+    }
+
+    const mdView = this.app.workspace.getActiveViewOfType(MarkdownView);
+    const commentsView = await this.activateView();
+    if (!commentsView) {
+      new Notice("无法打开批注栏");
+      return;
+    }
+    if (mdView) commentsView.lastMarkdownView = mdView;
+    await commentsView.revealThread(match);
+  }
+
+  async activateView(): Promise<CommentsView | null> {
     const { workspace } = this.app;
     const existing = workspace.getLeavesOfType(VIEW_TYPE_COMMENTS);
     if (existing.length > 0) {
       workspace.revealLeaf(existing[0]);
-      return;
+      return existing[0].view instanceof CommentsView
+        ? existing[0].view
+        : null;
     }
 
     const leaf = workspace.getRightLeaf(false);
     if (leaf) {
       await leaf.setViewState({ type: VIEW_TYPE_COMMENTS, active: true });
       workspace.revealLeaf(leaf);
+      return leaf.view instanceof CommentsView ? leaf.view : null;
     }
+    return null;
   }
 
   setupFloatingBar() {
@@ -775,21 +877,15 @@ function createCommentDecorationExtension(
   // decorations. ViewPlugin-provided replace decorations cannot replace line
   // breaks in Obsidian/CodeMirror, and CSS line hiding still leaves virtual
   // layout space. Keep this path direct unless CodeMirror's constraint changes.
-  const decorationField = StateField.define<{
-    decorations: DecorationSet;
-    isLivePreview: boolean;
-  }>({
+  const decorationField = StateField.define<CommentDecorationState>({
     create(state) {
-      return {
-        decorations: buildCommentDecorations(
-          state,
-          shouldFoldMarkup(),
-          shouldHighlightAnchors(),
-          true,
-          getParseOptions()
-        ),
-        isLivePreview: true,
-      };
+      return buildCommentDecorationState(
+        state,
+        shouldFoldMarkup(),
+        shouldHighlightAnchors(),
+        true,
+        getParseOptions()
+      );
     },
     update(value, transaction) {
       let isLivePreview = value.isLivePreview;
@@ -799,20 +895,57 @@ function createCommentDecorationExtension(
         }
       }
 
-      const shouldRebuild =
-        transaction.docChanged ||
-        transaction.selection ||
-        isLivePreview !== value.isLivePreview;
-
-      if (!shouldRebuild) return value;
-
-      return {
-        decorations: buildCommentDecorations(
+      if (isLivePreview !== value.isLivePreview) {
+        return buildCommentDecorationState(
           transaction.state,
           shouldFoldMarkup(),
           shouldHighlightAnchors(),
           isLivePreview,
           getParseOptions()
+        );
+      }
+
+      if (transaction.docChanged) {
+        if (
+          changesTouchComments(transaction.changes, value.comments) ||
+          changesMayAffectCommentSyntax(transaction.changes, transaction.state)
+        ) {
+          return buildCommentDecorationState(
+            transaction.state,
+            shouldFoldMarkup(),
+            shouldHighlightAnchors(),
+            isLivePreview,
+            getParseOptions()
+          );
+        }
+
+        const comments = mapCommentsThroughChanges(
+          value.comments,
+          transaction.changes
+        );
+        return {
+          comments,
+          decorations: buildCommentDecorationsFromComments(
+            transaction.state,
+            shouldFoldMarkup(),
+            shouldHighlightAnchors(),
+            isLivePreview,
+            comments
+          ),
+          isLivePreview,
+        };
+      }
+
+      if (!transaction.selection) return value;
+
+      return {
+        comments: value.comments,
+        decorations: buildCommentDecorationsFromComments(
+          transaction.state,
+          shouldFoldMarkup(),
+          shouldHighlightAnchors(),
+          isLivePreview,
+          value.comments
         ),
         isLivePreview,
       };
@@ -846,18 +979,44 @@ function createCommentDecorationExtension(
   return [decorationField, modeWatcher];
 }
 
-function buildCommentDecorations(
+interface CommentDecorationState {
+  decorations: DecorationSet;
+  isLivePreview: boolean;
+  comments: ParsedComment[];
+}
+
+function buildCommentDecorationState(
   state: EditorState,
   shouldFoldMarkup: boolean,
   shouldHighlightAnchors: boolean,
   isLivePreview: boolean,
   parseOptions: CommentParseOptions
+): CommentDecorationState {
+  const comments = findComments(state.doc.toString(), parseOptions);
+  return {
+    comments,
+    decorations: buildCommentDecorationsFromComments(
+      state,
+      shouldFoldMarkup,
+      shouldHighlightAnchors,
+      isLivePreview,
+      comments
+    ),
+    isLivePreview,
+  };
+}
+
+function buildCommentDecorationsFromComments(
+  state: EditorState,
+  shouldFoldMarkup: boolean,
+  shouldHighlightAnchors: boolean,
+  isLivePreview: boolean,
+  comments: ParsedComment[]
 ): DecorationSet {
   const ranges: Range<Decoration>[] = [];
-  const text = state.doc.toString();
   const foldMarkup = shouldFoldMarkup && isLivePreview;
 
-  for (const comment of findComments(text, parseOptions)) {
+  for (const comment of comments) {
     const start = comment.offset;
     const highlightTextStart = comment.anchorStart;
     const highlightTextEnd = comment.anchorEnd;
@@ -911,6 +1070,79 @@ function buildCommentDecorations(
   return Decoration.set(ranges, true);
 }
 
+function changesTouchComments(
+  changes: ChangeSet,
+  comments: ParsedComment[]
+): boolean {
+  if (comments.length === 0) return false;
+  let touches = false;
+  changes.iterChanges((fromA, toA) => {
+    if (touches) return;
+    touches = comments.some((comment) =>
+      rangeTouchesComment(fromA, toA, comment.offset, comment.end)
+    );
+  });
+  return touches;
+}
+
+function rangeTouchesComment(
+  from: number,
+  to: number,
+  commentStart: number,
+  commentEnd: number
+): boolean {
+  if (from === to) return from >= commentStart && from <= commentEnd;
+  return from < commentEnd && to > commentStart;
+}
+
+function changesMayAffectCommentSyntax(
+  changes: ChangeSet,
+  state: EditorState
+): boolean {
+  let mayAffect = false;
+  changes.iterChanges((_fromA, _toA, fromB, toB) => {
+    if (mayAffect) return;
+    const aroundStart = Math.max(0, fromB - 8);
+    const aroundEnd = Math.min(state.doc.length, toB + 8);
+    mayAffect = containsCommentMarkup(
+      state.doc.sliceString(aroundStart, aroundEnd)
+    );
+  });
+  return mayAffect;
+}
+
+function mapCommentsThroughChanges(
+  comments: ParsedComment[],
+  changes: ChangeSet
+): ParsedComment[] {
+  return comments.map((comment) => {
+    const entries = comment.entries.map((entry) =>
+      mapCommentEntryThroughChanges(entry, changes)
+    );
+    return {
+      ...comment,
+      offset: changes.mapPos(comment.offset, 1),
+      end: changes.mapPos(comment.end, -1),
+      anchorStart: changes.mapPos(comment.anchorStart, 1),
+      anchorEnd: changes.mapPos(comment.anchorEnd, -1),
+      metaStart: changes.mapPos(comment.metaStart, 1),
+      entries,
+    };
+  });
+}
+
+function mapCommentEntryThroughChanges(
+  entry: ParsedCommentEntry,
+  changes: ChangeSet
+): ParsedCommentEntry {
+  return {
+    ...entry,
+    offset: changes.mapPos(entry.offset, 1),
+    end: changes.mapPos(entry.end, -1),
+    metaStart: changes.mapPos(entry.metaStart, 1),
+  };
+}
+
 function addReplace(
   ranges: Range<Decoration>[],
   from: number,
@@ -921,11 +1153,19 @@ function addReplace(
   ranges.push(Decoration.replace(spec).range(from, to));
 }
 
+interface RenderCommentsOptions {
+  preservePanelScroll?: boolean;
+  focusThreadKey?: string;
+}
+
 class CommentsView extends ItemView {
   plugin: ReviewCommentsPlugin;
   lastMarkdownView: MarkdownView | null = null;
   statusFilter: CommentStatusFilter = "all";
   typeFilter = "all";
+  private renderRevision = 0;
+  private renderDebounce: number | null = null;
+  private focusClearTimer: number | null = null;
 
   constructor(leaf: WorkspaceLeaf, plugin: ReviewCommentsPlugin) {
     super(leaf);
@@ -948,17 +1188,52 @@ class CommentsView extends ItemView {
     void this.renderComments({ preservePanelScroll: false });
     this.registerEvent(
       this.app.workspace.on("active-leaf-change", () => {
+        this.cancelScheduledRender();
         void this.renderComments({ preservePanelScroll: false });
       })
     );
     this.registerEvent(
       this.app.workspace.on("editor-change", () => {
-        void this.renderComments();
+        this.scheduleRenderComments();
       })
     );
   }
 
-  async onClose() {}
+  async onClose() {
+    this.cancelScheduledRender();
+    if (this.focusClearTimer !== null) {
+      window.clearTimeout(this.focusClearTimer);
+      this.focusClearTimer = null;
+    }
+    this.renderRevision += 1;
+  }
+
+  private scheduleRenderComments(
+    options: RenderCommentsOptions = {},
+    delay = 250
+  ) {
+    this.cancelScheduledRender();
+    this.renderDebounce = window.setTimeout(() => {
+      this.renderDebounce = null;
+      void this.renderComments(options);
+    }, delay);
+  }
+
+  private cancelScheduledRender() {
+    if (this.renderDebounce === null) return;
+    window.clearTimeout(this.renderDebounce);
+    this.renderDebounce = null;
+  }
+
+  async revealThread(match: ParsedComment) {
+    this.statusFilter = "all";
+    this.typeFilter = "all";
+    this.cancelScheduledRender();
+    await this.renderComments({
+      preservePanelScroll: false,
+      focusThreadKey: getCommentThreadKey(match),
+    });
+  }
 
   getMarkdownView(): MarkdownView | null {
     const activeMdView =
@@ -1007,29 +1282,48 @@ class CommentsView extends ItemView {
     );
   }
 
-  async renderComments(options: { preservePanelScroll?: boolean } = {}) {
+  async renderComments(options: RenderCommentsOptions = {}) {
+    const renderId = ++this.renderRevision;
     const container = this.containerEl.children[1] as HTMLElement;
-    const shouldRestoreScroll = options.preservePanelScroll !== false;
+    const shouldFocusThread = Boolean(options.focusThreadKey);
+    const shouldRestoreScroll =
+      !shouldFocusThread && options.preservePanelScroll !== false;
     const previousPanelScrollTop = shouldRestoreScroll ? container.scrollTop : 0;
+    const nextContainer = document.createElement("div");
     const restorePanelScroll = () => {
       if (!shouldRestoreScroll || previousPanelScrollTop <= 0) return;
+      const restore = () => {
+        const maxTop = Math.max(0, container.scrollHeight - container.clientHeight);
+        container.scrollTop = Math.min(previousPanelScrollTop, maxTop);
+      };
       window.requestAnimationFrame(() => {
-        container.scrollTop = Math.min(
-          previousPanelScrollTop,
-          container.scrollHeight
-        );
+        restore();
+        window.requestAnimationFrame(restore);
+        window.setTimeout(restore, 60);
       });
     };
+    const finishRender = () => {
+      if (renderId !== this.renderRevision) return false;
+      container.empty();
+      while (nextContainer.firstChild) {
+        container.appendChild(nextContainer.firstChild);
+      }
+      if (options.focusThreadKey) {
+        this.scrollFocusedThreadIntoView(container);
+      } else {
+        restorePanelScroll();
+      }
+      return true;
+    };
 
-    container.empty();
-    new Setting(container).setName("批注").setHeading();
+    new Setting(nextContainer).setName("批注").setHeading();
 
     const mdView = this.getMarkdownView();
     if (!mdView) {
-      container.createEl("p", {
+      nextContainer.createEl("p", {
         text: "请先打开一个 Markdown 文件",
       });
-      restorePanelScroll();
+      finishRender();
       return;
     }
 
@@ -1038,11 +1332,11 @@ class CommentsView extends ItemView {
     const matches = findComments(text, this.plugin.getParseOptions());
 
     if (matches.length === 0) {
-      container.createEl("p", {
+      nextContainer.createEl("p", {
         text: "还没有批注。选中文本可添加锚定批注；无选区时可通过右键菜单、命令面板或快捷键添加单点批注。",
         cls: "review-comment-empty",
       });
-      restorePanelScroll();
+      finishRender();
       return;
     }
 
@@ -1057,7 +1351,7 @@ class CommentsView extends ItemView {
       this.typeFilter = "all";
     }
 
-    this.renderFilterBar(container, summary, availableTypes, mdView);
+    this.renderFilterBar(nextContainer, summary, availableTypes, mdView);
 
     const visibleMatches = filterComments(matches, {
       status: this.statusFilter,
@@ -1065,27 +1359,63 @@ class CommentsView extends ItemView {
     });
 
     if (visibleMatches.length === 0) {
-      container.createEl("p", {
+      nextContainer.createEl("p", {
         text: "当前筛选下没有批注。",
         cls: "review-comment-empty",
       });
-      restorePanelScroll();
+      finishRender();
       return;
     }
 
     for (const match of visibleMatches) {
-      await this.renderCommentCard(container, match, mdView, sourcePath);
+      if (renderId !== this.renderRevision) return;
+      await this.renderCommentCard(
+        nextContainer,
+        match,
+        mdView,
+        sourcePath,
+        options.focusThreadKey
+      );
+      if (renderId !== this.renderRevision) return;
     }
-    restorePanelScroll();
+    finishRender();
+  }
+
+  private scrollFocusedThreadIntoView(container: HTMLElement) {
+    const target = container.querySelector(
+      ".review-comment-card.is-focused"
+    ) as HTMLElement | null;
+    if (!target) return;
+
+    const reveal = () => target.scrollIntoView({ block: "center" });
+    window.requestAnimationFrame(() => {
+      reveal();
+      window.requestAnimationFrame(reveal);
+      window.setTimeout(reveal, 80);
+    });
+
+    if (this.focusClearTimer !== null) {
+      window.clearTimeout(this.focusClearTimer);
+    }
+    this.focusClearTimer = window.setTimeout(() => {
+      target.removeClass("is-focused");
+      this.focusClearTimer = null;
+    }, 1800);
   }
 
   async renderCommentCard(
     parent: HTMLElement,
     match: ParsedComment,
     mdView: MarkdownView,
-    sourcePath: string
+    sourcePath: string,
+    focusThreadKey?: string
   ) {
     const card = parent.createDiv({ cls: "review-comment-card" });
+    const threadKey = getCommentThreadKey(match);
+    card.dataset.reviewThreadKey = threadKey;
+    if (focusThreadKey === threadKey) {
+      card.classList.add("is-focused");
+    }
     const threadStatus = getThreadStatus(match);
     card.dataset.type = match.meta.type;
     card.dataset.status = threadStatus;
@@ -1301,12 +1631,14 @@ class CommentsView extends ItemView {
     try {
       const editor = mdView.editor;
       const value = editor.getValue();
+      const threadKey = getCommentThreadKey(match);
       this.applyEditorValuePatch(
         editor,
         value,
         replaceCommentThreadStatus(value, match, status)
       );
-      void this.renderComments();
+      this.cancelScheduledRender();
+      void this.renderComments({ focusThreadKey: threadKey });
     } catch (error) {
       new Notice(error instanceof Error ? error.message : "批注状态更新失败");
     }
@@ -1317,6 +1649,7 @@ class CommentsView extends ItemView {
       const editor = mdView.editor;
       const value = editor.getValue();
       this.applyEditorValuePatch(editor, value, removeComment(value, match));
+      this.cancelScheduledRender();
       void this.renderComments();
     } catch (error) {
       new Notice(error instanceof Error ? error.message : "删除批注失败");
@@ -1335,6 +1668,7 @@ class CommentsView extends ItemView {
         const editor = mdView.editor;
         const value = editor.getValue();
         try {
+          const threadKey = getCommentThreadKey(match);
           this.applyEditorValuePatch(
             editor,
             value,
@@ -1343,7 +1677,8 @@ class CommentsView extends ItemView {
               body: this.plugin.escapeCommentBody(body.trim()),
             })
           );
-          void this.renderComments();
+          this.cancelScheduledRender();
+          void this.renderComments({ focusThreadKey: threadKey });
         } catch (error) {
           new Notice(error instanceof Error ? error.message : "编辑批注失败");
         }
@@ -1358,15 +1693,16 @@ class CommentsView extends ItemView {
     new CommentInputModal(
       this.plugin.app,
       COMMENT_FORMAT.defaultType,
-      (body) => {
+      (body, typeTag) => {
         const editor = mdView.editor;
         const value = editor.getValue();
         const date = formatDate(new Date(), this.plugin.settings.dateFormat);
         const author = sanitizeAuthor(this.plugin.settings.authorName);
+        const threadKey = getCommentThreadKey(match);
         const replyMeta: ParsedMeta = {
           author,
           date,
-          type: COMMENT_FORMAT.defaultType,
+          type: typeTag || COMMENT_FORMAT.defaultType,
           body: this.plugin.escapeCommentBody(body.trim() || "回复"),
           id: generateCommentId(),
           status: "open",
@@ -1379,13 +1715,16 @@ class CommentsView extends ItemView {
             value,
             appendReplyComment(value, match, replyMeta)
           );
-          void this.renderComments();
+          this.cancelScheduledRender();
+          void this.renderComments({ focusThreadKey: threadKey });
         } catch (error) {
           new Notice(error instanceof Error ? error.message : "回复失败");
         }
       },
       `回复${match.meta.id ? ` · ${match.meta.id}` : ""}`,
-      "回复"
+      "回复",
+      "",
+      true
     ).open();
   }
 
@@ -1461,6 +1800,44 @@ function getThreadStatus(thread: ParsedComment): ParsedMeta["status"] {
   return thread.entries.some((entry) => entry.meta.status === "open")
     ? "open"
     : "closed";
+}
+
+function getCommentThreadKey(thread: ParsedComment): string {
+  const firstId = thread.entries.find((entry) => entry.meta.id)?.meta.id;
+  if (firstId) return `id:${firstId}`;
+
+  // Replies extend `end`, so key on the stable anchor and first metadata slice.
+  // This keeps sidebar locate/re-render behavior stable for minimal draft threads.
+  return [
+    "thread",
+    thread.syntax,
+    thread.offset,
+    thread.anchorStart,
+    thread.anchorEnd,
+    stableHash(`${thread.anchor}\n${thread.entries[0]?.metaSource || ""}`),
+  ].join(":");
+}
+
+function stableHash(value: string): string {
+  let hash = 5381;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = (hash * 33) ^ value.charCodeAt(i);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function findCommentInRange(
+  comments: ParsedComment[],
+  start: number,
+  end: number
+): ParsedComment | null {
+  const hasSelection = start !== end;
+  return (
+    comments.find((comment) => {
+      if (hasSelection) return start < comment.end && end > comment.offset;
+      return start >= comment.offset && start <= comment.end;
+    }) || null
+  );
 }
 
 function getCommentAnchorLabel(comment: ParsedComment): string {
@@ -1540,9 +1917,10 @@ class ReviewCommentsSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("复制批注清单格式")
-      .setDesc("简单版适合人类审阅与批注辩论；完整版会额外带文件、位置、状态、类型、作者、日期和 id。")
+      .setDesc("极简版只保留被批注文本与回复正文；简单版带清单标题与分节；完整版会额外带文件、位置、状态、类型、作者、日期和 id。")
       .addDropdown((dd) =>
         dd
+          .addOption("minimal", "极简版")
           .addOption("simple", "简单版")
           .addOption("full", "完整版")
           .setValue(this.plugin.settings.commentExportFormat)

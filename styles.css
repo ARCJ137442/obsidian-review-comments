@@ -64,7 +64,7 @@
 .review-comment-highlight-live[data-type="COMMENT"],
 .review-comment-point[data-type="COMMENT"],
 .review-comment-point-live[data-type="COMMENT"] {
-  --review-comment-type-color: 221, 221, 221;
+  --review-comment-type-color: 230, 190, 40;
 }
 
 .review-comment-highlight[data-type="ASK"],
@@ -97,7 +97,7 @@
 
 .review-comment-point,
 .review-comment-point-live {
-  --review-comment-type-color: 221, 221, 221;
+  --review-comment-type-color: 230, 190, 40;
   display: inline-block;
   margin: 0 0.08em;
   color: rgba(var(--review-comment-type-color), 0.95);
@@ -176,6 +176,11 @@
   background: var(--background-modifier-hover);
 }
 
+.review-comment-card.is-focused {
+  background: var(--background-modifier-hover);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--interactive-accent) 45%, transparent);
+}
+
 .review-comment-card[data-status="closed"] {
   opacity: 0.72;
 }
@@ -194,7 +199,7 @@
 }
 
 .review-comment-card[data-type="COMMENT"] {
-  border-left-color: #dddddd;
+  border-left-color: #e6be28;
 }
 
 .review-comment-card[data-type="ASK"] {
@@ -288,7 +293,7 @@
 }
 
 .review-comment-thread-entry[data-type="COMMENT"] {
-  border-left-color: #dddddd;
+  border-left-color: #e6be28;
 }
 
 .review-comment-thread-entry[data-type="ASK"] {
@@ -376,6 +381,51 @@
   margin: 0;
   color: var(--text-muted);
   font-size: 12px;
+}
+
+.review-comment-modal-type-selector {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.review-comment-modal-type-label {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.review-comment-modal-type-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.review-comment-modal-type-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 9px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-secondary);
+  color: var(--text-normal);
+  font-size: 12px;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.review-comment-modal-type-option:hover {
+  background: var(--background-modifier-hover);
+}
+
+.review-comment-modal-type-option.is-selected {
+  border-color: var(--interactive-accent);
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.review-comment-modal-type-icon {
+  font-size: 13px;
 }
 
 .review-comment-modal-textarea {

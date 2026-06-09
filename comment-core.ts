@@ -5,7 +5,7 @@ export type CommentSyntax =
   | "plain-anchor";
 export type CommentStatus = "open" | "closed";
 export type CommentStatusFilter = "all" | CommentStatus;
-export type CommentExportFormat = "simple" | "full";
+export type CommentExportFormat = "minimal" | "simple" | "full";
 
 export const COMMENT_SYNTAXES: CommentSyntax[] = [
   "plain-anchor",
@@ -298,6 +298,10 @@ export function exportCommentsMarkdown(
   options: CommentExportOptions = {}
 ): string {
   const format = options.format || "simple";
+  if (format === "minimal") {
+    return exportMinimalCommentsMarkdown(comments);
+  }
+
   const lines = ["# 当前文件批注清单", ""];
 
   if (format === "full") {
@@ -345,6 +349,23 @@ export function exportCommentsMarkdown(
         lines.push("");
       }
       lines.push(formatMarkdownBody(entry.meta.body), "");
+    });
+  });
+
+  return lines.join("\n").trimEnd();
+}
+
+function exportMinimalCommentsMarkdown(comments: ParsedComment[]): string {
+  if (comments.length === 0) return "当前文件没有批注。";
+
+  const lines: string[] = [];
+  comments.forEach((comment, threadIndex) => {
+    if (threadIndex > 0) lines.push("");
+
+    lines.push(formatBlockquote(getExportAnchorLabel(comment)), "");
+    comment.entries.forEach((entry, entryIndex) => {
+      if (entryIndex > 0) lines.push("");
+      lines.push(formatMarkdownBody(entry.meta.body));
     });
   });
 
