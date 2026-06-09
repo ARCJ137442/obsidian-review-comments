@@ -23,7 +23,7 @@
 - 新回复不需要 `replyTo`。第一条之后的每个 `{>>...<<}` 都被视为同一线性线程中对上一条批注的回复。
 - 旧格式 `{<<...>>}{>>...<<}`、`{==...==}{>>...<<}` 和过渡格式 `{=#...#=}{>>...<<}` 仍可兼容读取，但插件新写入默认使用 `{...}{>>...<<}`。
 - 标题批注会插入为标题下方的单点批注，避免批注标记进入 Obsidian 标题索引。
-- 锚定文本和批注正文都可以跨行；侧栏会对锚定原文与批注正文做基础 Markdown 渲染。
+- 锚定文本和批注正文都可以跨行；Live Preview 会隐藏多行批注正文元数据并保留锚定文本的多行高亮 / 下划线，侧栏会对锚定原文与批注正文做基础 Markdown 渲染。
 
 ## 构建
 
@@ -101,6 +101,12 @@ npm run dev   # watch mode
 npm run build # production build
 npm test      # parser and source-editing regression tests
 ```
+
+实现注意：多行 `{>>...<<}` 批注正文折叠必须使用直接提供给 CodeMirror 的 `StateField` decorations。不要把跨行 `Decoration.replace` 放回 ViewPlugin，也不要尝试只用 CSS 隐藏整行；这两种方式都会在 Obsidian Live Preview 中暴露崩溃或空行残留问题。
+
+## 变更记录
+
+- 2026-06-09：修复多行批注正文折叠。多行锚定文本继续跨行高亮 / 下划线；多行批注正文在 Live Preview 中折叠后不再残留空白行。验证：`npm test` 36/36 PASS，`npx tsc --noEmit` PASS，`npm run build` PASS，并已在 `ExoNet-Reticulum-rt44-migration` 测试 vault 中人工确认效果正常。
 
 ## License
 

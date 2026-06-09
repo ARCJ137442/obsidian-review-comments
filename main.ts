@@ -572,6 +572,10 @@ function createCommentDecorationExtension(
   shouldFoldMarkup: () => boolean,
   shouldHighlightAnchors: () => boolean
 ) {
+  // Cross-line comment bodies must be folded by directly provided StateField
+  // decorations. ViewPlugin-provided replace decorations cannot replace line
+  // breaks in Obsidian/CodeMirror, and CSS line hiding still leaves virtual
+  // layout space. Keep this path direct unless CodeMirror's constraint changes.
   const decorationField = StateField.define<{
     decorations: DecorationSet;
     isLivePreview: boolean;
