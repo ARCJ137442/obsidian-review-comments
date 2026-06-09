@@ -676,10 +676,10 @@ class CommentsView extends ItemView {
   }
 
   async onOpen() {
-    void this.renderComments();
+    void this.renderComments({ preservePanelScroll: false });
     this.registerEvent(
       this.app.workspace.on("active-leaf-change", () => {
-        void this.renderComments();
+        void this.renderComments({ preservePanelScroll: false });
       })
     );
     this.registerEvent(
@@ -738,8 +738,20 @@ class CommentsView extends ItemView {
     );
   }
 
-  async renderComments() {
+  async renderComments(options: { preservePanelScroll?: boolean } = {}) {
     const container = this.containerEl.children[1] as HTMLElement;
+    const shouldRestoreScroll = options.preservePanelScroll !== false;
+    const previousPanelScrollTop = shouldRestoreScroll ? container.scrollTop : 0;
+    const restorePanelScroll = () => {
+      if (!shouldRestoreScroll || previousPanelScrollTop <= 0) return;
+      window.requestAnimationFrame(() => {
+        container.scrollTop = Math.min(
+          previousPanelScrollTop,
+          container.scrollHeight
+        );
+      });
+    };
+
     container.empty();
     new Setting(container).setName("批注").setHeading();
 
@@ -748,6 +760,7 @@ class CommentsView extends ItemView {
       container.createEl("p", {
         text: "请先打开一个 Markdown 文件",
       });
+      restorePanelScroll();
       return;
     }
 
@@ -760,6 +773,7 @@ class CommentsView extends ItemView {
         text: "还没有批注。选中文本可添加锚定批注；无选区时可通过右键菜单、命令面板或快捷键添加单点批注。",
         cls: "review-comment-empty",
       });
+      restorePanelScroll();
       return;
     }
 
@@ -786,12 +800,14 @@ class CommentsView extends ItemView {
         text: "当前筛选下没有批注。",
         cls: "review-comment-empty",
       });
+      restorePanelScroll();
       return;
     }
 
     for (const match of visibleMatches) {
       await this.renderCommentCard(container, match, mdView, sourcePath);
     }
+    restorePanelScroll();
   }
 
   async renderCommentCard(
@@ -1002,7 +1018,11 @@ class CommentsView extends ItemView {
     try {
       const editor = mdView.editor;
       const value = editor.getValue();
-      editor.setValue(replaceCommentThreadStatus(value, match, status));
+      this.applyEditorValuePatch(
+        editor,
+        value,
+        replaceCommentThreadStatus(value, match, status)
+      );
       void this.renderComments();
     } catch (error) {
       new Notice(error instanceof Error ? error.message : "批注状态更新失败");
@@ -1013,7 +1033,7 @@ class CommentsView extends ItemView {
     try {
       const editor = mdView.editor;
       const value = editor.getValue();
-      editor.setValue(removeComment(value, match));
+      this.applyEditorValuePatch(editor, value, removeComment(value, match));
       void this.renderComments();
     } catch (error) {
       new Notice(error instanceof Error ? error.message : "删除批注失败");
@@ -1032,7 +1052,9 @@ class CommentsView extends ItemView {
         const editor = mdView.editor;
         const value = editor.getValue();
         try {
-          editor.setValue(
+          this.applyEditorValuePatch(
+            editor,
+            value,
             replaceCommentEntryMeta(value, match, entry.index, {
               ...entry.meta,
               body: this.plugin.escapeCommentBody(body.trim()),
@@ -1069,7 +1091,11 @@ class CommentsView extends ItemView {
         };
 
         try {
-          editor.setValue(appendReplyComment(value, match, replyMeta));
+          this.applyEditorValuePatch(
+            editor,
+            value,
+            appendReplyComment(value, match, replyMeta)
+          );
           void this.renderComments();
         } catch (error) {
           new Notice(error instanceof Error ? error.message : "回复失败");
@@ -1079,6 +1105,73 @@ class CommentsView extends ItemView {
       "回复"
     ).open();
   }
+
+  private applyEditorValuePatch(editor: Editor, before: string, after: string) {
+    if (before === after) return;
+
+    const scroll = this.captureEditorScroll(editor);
+    const patch = getMinimalTextPatch(before, after);
+    editor.replaceRange(
+      patch.replacement,
+      editor.offsetToPos(patch.from),
+      editor.offsetToPos(patch.to)
+    );
+    this.restoreEditorScroll(editor, scroll);
+  }
+
+  private captureEditorScroll(editor: Editor): { left: number; top: number } | null {
+    const scrollableEditor = editor as Editor & {
+      getScrollInfo?: () => { left?: number; top?: number };
+    };
+    const scrollInfo = scrollableEditor.getScrollInfo?.();
+    if (!scrollInfo) return null;
+    return {
+      left: scrollInfo.left ?? 0,
+      top: scrollInfo.top ?? 0,
+    };
+  }
+
+  private restoreEditorScroll(
+    editor: Editor,
+    scroll: { left: number; top: number } | null
+  ) {
+    if (!scroll) return;
+    const scrollableEditor = editor as Editor & {
+      scrollTo?: (left: number, top: number) => void;
+    };
+    const restore = () => scrollableEditor.scrollTo?.(scroll.left, scroll.top);
+    restore();
+    window.requestAnimationFrame(restore);
+    window.setTimeout(restore, 0);
+  }
+}
+
+function getMinimalTextPatch(before: string, after: string) {
+  let from = 0;
+  while (
+    from < before.length &&
+    from < after.length &&
+    before.charCodeAt(from) === after.charCodeAt(from)
+  ) {
+    from += 1;
+  }
+
+  let beforeEnd = before.length;
+  let afterEnd = after.length;
+  while (
+    beforeEnd > from &&
+    afterEnd > from &&
+    before.charCodeAt(beforeEnd - 1) === after.charCodeAt(afterEnd - 1)
+  ) {
+    beforeEnd -= 1;
+    afterEnd -= 1;
+  }
+
+  return {
+    from,
+    to: beforeEnd,
+    replacement: after.slice(from, afterEnd),
+  };
 }
 
 function getThreadStatus(thread: ParsedComment): ParsedMeta["status"] {
