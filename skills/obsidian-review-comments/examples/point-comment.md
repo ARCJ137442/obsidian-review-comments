@@ -1,7 +1,7 @@
 # Point Comment
 
 ## Heading That Should Stay Clean
-{}{>>author=Human;date=2026-06-09;type=NOTE;id=RC-20260609-121000-IJKL;scope=heading;target=Heading That Should Stay Clean: This is a heading-level comment stored below the heading.<<}
+{}{>>author=Human;date=2026-06-09;type=COMMENT;id=RC-20260609-121000-IJKL;scope=heading;target=Heading That Should Stay Clean: This is a heading-level comment stored below the heading.<<}
 
 Expected agent behavior:
 

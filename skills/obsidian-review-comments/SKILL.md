@@ -40,10 +40,10 @@ Before using this skill automatically:
 Prefer the plugin's Markdown-native plain-anchor syntax:
 
 ```markdown
-{selected text}{>>author=Human;date=2026-06-09;type=NOTE;id=RC-20260609-120000-ABCD: comment body<<}
-{selected text}{>>author=Human;date=2026-06-09;type=ASK;id=RC-20260609-120100-EFGH: first comment<<}{>>author=Agent;date=2026-06-09;type=NOTE;id=RC-20260609-120200-IJKL: linear reply<<}
+{selected text}{>>author=Human;date=2026-06-09;type=COMMENT;id=RC-20260609-120000-ABCD: comment body<<}
+{selected text}{>>author=Human;date=2026-06-09;type=ASK;id=RC-20260609-120100-EFGH: first comment<<}{>>author=Agent;date=2026-06-09;type=COMMENT;id=RC-20260609-120200-IJKL: linear reply<<}
 {selected text}{>>minimal draft comment<<}
-{}{>>author=Human;date=2026-06-09;type=NOTE;id=RC-20260609-120300-MNOP: point comment body<<}
+{}{>>author=Human;date=2026-06-09;type=COMMENT;id=RC-20260609-120300-MNOP: point comment body<<}
 ```
 
 Also recognize compatible legacy forms:
@@ -63,6 +63,8 @@ Rules:
   comment when immediately followed by `{>>...<<}`.
 - Missing `status` defaults to `open`; new open comments should normally omit
   `status=open`.
+- Missing `type` defaults to `COMMENT / 批注`. `NOTE` remains a valid explicit
+  legacy type, but it is not the default generic type for new comments.
 - `status=closed` means closed, not deleted. Preserve closed comments unless the
   user explicitly requests removal.
 - Replies are linear. A reply is the next adjacent `{>>...<<}` block in the same
@@ -113,10 +115,10 @@ See `protocol.md` for the full protocol and edge cases.
 
 When the user asks you to add a visible Review Comments annotation:
 
-- Use `{span}{>>author=Agent;date=YYYY-MM-DD;type=TYPE;id=RC-...: body<<}` for
-  comments anchored to selected text.
-- Use `{}{>>author=Agent;date=YYYY-MM-DD;type=TYPE;id=RC-...: body<<}` for point
-  comments with no selected text.
+- Use `{span}{>>author=Agent;date=YYYY-MM-DD;type=COMMENT;id=RC-...: body<<}`
+  for comments anchored to selected text unless the user selected another type.
+- Use `{}{>>author=Agent;date=YYYY-MM-DD;type=COMMENT;id=RC-...: body<<}` for
+  point comments with no selected text unless the user selected another type.
 - Use a concrete author value available in the working context. If none is known,
   use `Agent`.
 - Include `id=RC-...` for agent-authored comments and replies.

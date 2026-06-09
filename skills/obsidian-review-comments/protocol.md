@@ -12,7 +12,7 @@ Markdown alone.
 ## Preferred Format
 
 ```markdown
-{anchor}{>>author=Human;date=2026-06-09;type=NOTE;id=RC-20260609-120000-ABCD: body<<}
+{anchor}{>>author=Human;date=2026-06-09;type=COMMENT;id=RC-20260609-120000-ABCD: body<<}
 ```
 
 Fields:
@@ -25,7 +25,7 @@ Fields:
 Recommended metadata:
 
 ```text
-author=Human;date=YYYY-MM-DD;type=NOTE;id=RC-YYYYMMDD-HHMMSS-RAND
+author=Human;date=YYYY-MM-DD;type=COMMENT;id=RC-YYYYMMDD-HHMMSS-RAND
 ```
 
 `status=open` is optional and should usually be omitted. `status=closed` is
@@ -58,7 +58,7 @@ Do not create tree-shaped reply topology by adding `replyTo` to new comments.
 Point comments have no selected text:
 
 ```markdown
-{}{>>author=Human;date=2026-06-09;type=NOTE;id=RC-20260609-120000-ABCD: point comment<<}
+{}{>>author=Human;date=2026-06-09;type=COMMENT;id=RC-20260609-120000-ABCD: point comment<<}
 ```
 
 Use point comments for cursor comments, no-selection right-click comments, or
@@ -99,10 +99,13 @@ Do not migrate compatible legacy syntax unless the user explicitly asks for it.
 Known built-in types include:
 
 ```text
-ASK, EDIT, PRAISE, NOTE
+COMMENT, ASK, EDIT, PRAISE, NOTE
 ```
 
 Custom types may appear. Preserve unknown types exactly.
+
+Missing `type` means `COMMENT / 批注`. `NOTE` remains a valid explicit legacy type
+when it is already present.
 
 `PRAISE` is normally evidence or feedback, not an action item.
 
@@ -122,7 +125,7 @@ the heading:
 
 ```markdown
 ## Heading Text
-{}{>>author=Human;date=2026-06-09;type=NOTE;id=RC-20260609-120000-ABCD;scope=heading;target=Heading Text: comment body<<}
+{}{>>author=Human;date=2026-06-09;type=COMMENT;id=RC-20260609-120000-ABCD;scope=heading;target=Heading Text: comment body<<}
 ```
 
 This keeps heading indexes and wiki links stable.

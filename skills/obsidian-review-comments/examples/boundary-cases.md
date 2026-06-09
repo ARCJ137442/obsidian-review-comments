@@ -20,7 +20,7 @@ Expected agent behavior:
 
 | Topic | Note |
 | --- | --- |
-| Metadata | {semicolon fields}{>>author=Human;date=2026-06-09;type=NOTE;id=RC-20260609-122000-ABCD: Use semicolons instead of pipe-separated metadata in tables.<<} |
+| Metadata | {semicolon fields}{>>author=Human;date=2026-06-09;type=COMMENT;id=RC-20260609-122000-ABCD: Use semicolons instead of pipe-separated metadata in tables.<<} |
 
 Expected agent behavior:
 
@@ -39,4 +39,3 @@ Expected agent behavior:
 - Treat the multiline body as one comment entry.
 - Preserve Markdown line breaks unless the user asks for normalization.
 - Do not split the body into multiple thread entries.
-
