@@ -125,11 +125,11 @@ npm test      # parser and source-editing regression tests
 
 CodeMirror 模式同步也必须延迟调度：不要在 `ViewPlugin` 构造函数或 `update` 回调里直接 `view.dispatch(...)`，否则会触发 `Calls to EditorView.update are not allowed while an update is in progress`。当前实现通过零延迟任务合并模式切换，避免在 Obsidian 正在刷新编辑器时重入 dispatch。
 
-阅读模式中的表格批注不能按单个 DOM text node 解析。Obsidian 渲染行内代码、强调等 Markdown 时会把一个 `{anchor}{>>...<<}` 批注线程拆成多个 text node；当前实现先按表格单元格、段落、列表项、引用块、callout 等容器分组，再拼接片段解析并用 DOM Range 一次性替换完整线程。后续不要退回逐 text node 替换，否则会重现“表格里 7 个批注只有部分可见”的问题。
+阅读模式中的表格批注不能按单个 DOM text node 解析。Obsidian 渲染行内代码、强调等 Markdown 时会把一个 `{anchor}{>>...<<}` 批注线程拆成多个 text node；表格单元格的 Markdown postprocessor 还可能收到尚未挂载到文档树上的 `div.table-cell-wrapper`，此时 `node.isConnected === false` 但 DOM Range 替换仍然有效。当前实现先按表格单元格、段落、列表项、引用块、callout 等容器分组，再拼接片段解析，并基于 `ownerDocument` 与仍有 `parentElement` 的 text node 一次性替换完整线程。后续不要退回逐 text node 替换，也不要把 `isConnected` 当作渲染门槛，否则会重现“表格里 7 个批注只有部分可见 / 完全不渲染”的问题。
 
 ## 变更记录
 
-- 2026-06-11：修复阅读模式 / Live Preview 中表格批注被 Obsidian 拆分成多个 DOM text node 后无法完整识别的问题，覆盖 `local/reply.local.md` 同形态的 7 个表格批注样本；新增 `批注方式` 设置，可在弹框式批注与编辑式批注之间切换；弹框式和侧栏编辑 / 回复在表格、列表、引用块、callout 中会把多行批注正文规范化为 `<br>`，避免破坏 Markdown 源结构；弹窗关闭时会保护未提交草稿，避免误点遮罩丢失正文。验证：`npm test` 73/73 PASS，`npm run build` PASS。
+- 2026-06-11：修复阅读模式 / Live Preview 中表格批注被 Obsidian 拆分成多个 DOM text node 后无法完整识别的问题，并补上 `div.table-cell-wrapper` detached DOM 回归测试，覆盖 `local/reply.local.md` 同形态的表格批注样本；新增 `批注方式` 设置，可在弹框式批注与编辑式批注之间切换；弹框式和侧栏编辑 / 回复在表格、列表、引用块、callout 中会把多行批注正文规范化为 `<br>`，避免破坏 Markdown 源结构；弹窗关闭时会保护未提交草稿，避免误点遮罩丢失正文。验证：`npm test` 76/76 PASS，`npx tsc --noEmit` PASS，`npm run build` PASS。
 - 2026-06-10：完成 M5 类型 registry 收尾，并修复侧栏筛选与编辑器模式同步细节。设置页支持自定义批注类型的命令 id、metadata tag、显示名称、emoji 与颜色；默认 `COMMENT / 批注` 固定保留、不可删除，但可编辑 id / 名称 / emoji / 颜色，默认色为 `#e6be28`。命令面板、右键菜单、悬浮工具条、回复 / 编辑弹窗、正文装饰、侧栏卡片、线程条目和状态 / 类型标签筛选都改为读取 registry；侧栏移除重复静态计数行，改用更轻的凹陷 pill 筛选标签；CodeMirror 模式同步改为延迟 dispatch，避免打开带批注文件时重入更新。验证：`npm test` 67/67 PASS，`npx tsc --noEmit` PASS，`npm run build` PASS。
 - 2026-06-09：新增 `极简版` 批注清单导出格式，只输出被批注文本与连续批注 / 回复正文；默认通用类型 `COMMENT / 批注` 的高亮、下划线、卡片边线改回黄色，增强默认批注识别度。验证：`npm test` 55/55 PASS，`npx tsc --noEmit` PASS。
 - 2026-06-09：完成 M4/M5 第一轮。设置页新增 `新建批注使用格式` 与 `兼容读取格式`，解析器可按配置兼容 `{...}`、`{<<...>>}`、`{==...==}`、`{=#...#=}`，新建范围批注、单点批注与回复按当前使用格式写入；新增默认通用类型 `COMMENT / 批注`，新批注与回复默认使用该类型，颜色为浅灰 `#dddddd`，旧显式 `NOTE` 继续原样读取。验证：`npm test` 52/52 PASS，`npx tsc --noEmit` PASS，`npm run build` PASS。

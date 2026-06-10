@@ -38,13 +38,11 @@ import {
   ParsedComment,
   ParsedCommentEntry,
   ParsedMeta,
-  SegmentedComment,
   appendReplyComment,
   containsCommentMarkup,
   exportCommentsMarkdown,
   filterComments,
   findComments,
-  findCommentsAcrossSegments,
   formatComment,
   formatEditableComment,
   generateCommentId,
@@ -69,6 +67,7 @@ import {
   sanitizeCommentTypeLabel,
   sanitizeCommentTypeTag,
 } from "./comment-types";
+import { renderCommentMarkupInReadingMode } from "./reading-mode-renderer";
 
 interface ReviewCommentsSettings {
   authorName: string;
@@ -960,51 +959,19 @@ export default class ReviewCommentsPlugin extends Plugin {
     el: HTMLElement,
     _ctx: MarkdownPostProcessorContext
   ) {
-    const groups = collectReadingModeTextNodeGroups(el);
-    for (const textNodes of groups) {
-      this.renderSegmentedCommentsInReadingMode(textNodes);
-    }
+    renderCommentMarkupInReadingMode(el, {
+      parseOptions: this.getParseOptions(),
+      createCommentElement: (comment, ownerDocument) =>
+        this.createReadingModeCommentElement(comment, ownerDocument),
+    });
   }
 
-  private renderSegmentedCommentsInReadingMode(textNodes: Text[]) {
-    const connectedTextNodes = textNodes.filter(
-      (node) => node.isConnected && node.parentElement
-    );
-    if (connectedTextNodes.length === 0) return;
-
-    const segments = connectedTextNodes.map((node) => node.textContent || "");
-    const source = segments.join("");
-    if (!containsCommentMarkup(source)) return;
-
-    const comments = findCommentsAcrossSegments(segments, this.getParseOptions());
-    for (const segmented of comments.reverse()) {
-      this.replaceSegmentedCommentInReadingMode(connectedTextNodes, segmented);
-    }
-  }
-
-  private replaceSegmentedCommentInReadingMode(
-    textNodes: Text[],
-    segmented: SegmentedComment
-  ) {
-    const firstSpan = segmented.spans[0];
-    const lastSpan = segmented.spans[segmented.spans.length - 1];
-    if (!firstSpan || !lastSpan) return;
-
-    const startNode = textNodes[firstSpan.segmentIndex];
-    const endNode = textNodes[lastSpan.segmentIndex];
-    if (!startNode?.isConnected || !endNode?.isConnected) return;
-
-    const range = document.createRange();
-    range.setStart(startNode, firstSpan.start);
-    range.setEnd(endNode, lastSpan.end);
-    range.deleteContents();
-    range.insertNode(this.createReadingModeCommentElement(segmented.comment));
-    range.detach();
-  }
-
-  private createReadingModeCommentElement(comment: ParsedComment): HTMLElement {
+  private createReadingModeCommentElement(
+    comment: ParsedComment,
+    ownerDocument: Document = document
+  ): HTMLElement {
     const meta = comment.meta;
-    const span = document.createElement("span");
+    const span = ownerDocument.createElement("span");
     if (comment.anchor) {
       span.className = "review-comment-highlight";
       if (!this.settings.highlightAnchors) {
@@ -1026,47 +993,6 @@ export default class ReviewCommentsPlugin extends Plugin {
     );
     return span;
   }
-}
-
-function collectReadingModeTextNodeGroups(root: HTMLElement): Text[][] {
-  // Obsidian may split one raw table comment thread across several text nodes
-  // when it renders inline Markdown inside the comment body. Group by the
-  // nearest Markdown block container first; parsing per text node loses comments.
-  const textNodes: Text[] = [];
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-    acceptNode(node) {
-      const parent = node.parentElement;
-      if (!parent) return NodeFilter.FILTER_REJECT;
-      if (parent.closest("pre")) return NodeFilter.FILTER_REJECT;
-      if (parent.closest(".review-comment-highlight, .review-comment-point")) {
-        return NodeFilter.FILTER_REJECT;
-      }
-      return NodeFilter.FILTER_ACCEPT;
-    },
-  });
-
-  let node: Node | null;
-  while ((node = walker.nextNode())) {
-    textNodes.push(node as Text);
-  }
-
-  const groups = new Map<Element, Text[]>();
-  for (const textNode of textNodes) {
-    const parent = textNode.parentElement;
-    if (!parent) continue;
-    const groupRoot =
-      parent.closest(
-        "td, th, p, li, blockquote, h1, h2, h3, h4, h5, h6, .callout, .markdown-preview-section > div"
-      ) || parent;
-    const existing = groups.get(groupRoot);
-    if (existing) {
-      existing.push(textNode);
-    } else {
-      groups.set(groupRoot, [textNode]);
-    }
-  }
-
-  return [...groups.values()];
 }
 
 function sanitizeAuthor(name: string): string {

@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-06-11
+
+- Fixed reading-mode table rendering for detached Obsidian `div.table-cell-wrapper`
+  postprocessor roots. Agents should not treat `node.isConnected === false` as
+  evidence that table comment markup cannot be rendered.
+- Recorded that table comments are parsed from grouped text-node segments and
+  replaced through the root `ownerDocument`, preserving Markdown as the truth
+  source while keeping Obsidian reading mode usable.
+- Added regression coverage for detached table cells, split inline Markdown text
+  nodes, multiple comments in one table cell, and per-cell grouping boundaries.
+
 ## 2026-06-09
 
 - Added the bundled Agent Skill under the plugin repository's `skills/` folder.
