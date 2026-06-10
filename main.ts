@@ -38,15 +38,19 @@ import {
   ParsedComment,
   ParsedCommentEntry,
   ParsedMeta,
+  SegmentedComment,
   appendReplyComment,
   containsCommentMarkup,
   exportCommentsMarkdown,
   filterComments,
   findComments,
+  findCommentsAcrossSegments,
   formatComment,
+  formatEditableComment,
   generateCommentId,
   isCommentSyntax,
   lintComments,
+  normalizeCommentBodyForContext,
   normalizeCommentSyntaxes,
   removeComment,
   replaceCommentEntryMeta,
@@ -69,6 +73,7 @@ import {
 interface ReviewCommentsSettings {
   authorName: string;
   dateFormat: "iso" | "japanese";
+  commentCreationMode: "modal" | "inline";
   autoOpenPanel: boolean;
   showFloatingBar: boolean;
   foldEditorMarkup: boolean;
@@ -82,6 +87,7 @@ interface ReviewCommentsSettings {
 const DEFAULT_SETTINGS: ReviewCommentsSettings = {
   authorName: "you",
   dateFormat: "iso",
+  commentCreationMode: "modal",
   autoOpenPanel: true,
   showFloatingBar: true,
   foldEditorMarkup: true,
@@ -106,10 +112,13 @@ function normalizeSettings(
   const writeCommentSyntax = isCommentSyntax(loaded.writeCommentSyntax)
     ? loaded.writeCommentSyntax
     : DEFAULT_SETTINGS.writeCommentSyntax;
+  const commentCreationMode =
+    loaded.commentCreationMode === "inline" ? "inline" : "modal";
 
   return {
     ...DEFAULT_SETTINGS,
     ...loaded,
+    commentCreationMode,
     writeCommentSyntax,
     compatibleCommentSyntaxes: normalizeCommentSyntaxes(
       loaded.compatibleCommentSyntaxes,
@@ -146,15 +155,24 @@ interface HeadingCommentContext {
   target: string;
 }
 
+interface EditableInsertion {
+  startOffset: number;
+  bodyStart: number;
+  bodyEnd: number;
+}
+
 class CommentInputModal extends Modal {
   private selectedTypeTag: string;
   private readonly onSubmit: (body: string, typeTag: string) => void;
   private readonly commentTypes: ReviewCommentType[];
   private readonly titleText: string;
   private readonly submitText: string;
-  private readonly initialBody: string;
+  private draftBody: string;
   private readonly showTypeSelector: boolean;
   private readonly typeSelectorLabel: string;
+  private submitted = false;
+  private explicitCancel = false;
+  private restoringDraft = false;
 
   constructor(
     app: App,
@@ -178,7 +196,7 @@ class CommentInputModal extends Modal {
       titleText ||
       formatAddCommentTitle(this.selectedTypeTag, this.commentTypes);
     this.submitText = submitText || "添加批注";
-    this.initialBody = initialBody || "";
+    this.draftBody = initialBody || "";
     this.showTypeSelector = Boolean(showTypeSelector);
     this.typeSelectorLabel = typeSelectorLabel || "批注类型";
   }
@@ -202,7 +220,7 @@ class CommentInputModal extends Modal {
       cls: "review-comment-modal-textarea",
     });
     textarea.placeholder = "例：\n这里需要重新判断\n- 理由\n- 相关上下文";
-    textarea.value = this.initialBody;
+    textarea.value = this.draftBody;
 
     const actions = contentEl.createDiv({
       cls: "review-comment-modal-actions",
@@ -216,8 +234,14 @@ class CommentInputModal extends Modal {
       cls: "mod-cta",
     });
 
-    cancelBtn.addEventListener("click", () => this.close());
+    cancelBtn.addEventListener("click", () => {
+      this.explicitCancel = true;
+      this.close();
+    });
     submitBtn.addEventListener("click", () => this.submit(textarea.value));
+    textarea.addEventListener("input", () => {
+      this.draftBody = textarea.value;
+    });
     textarea.addEventListener("keydown", (evt: KeyboardEvent) => {
       if ((evt.metaKey || evt.ctrlKey) && evt.key === "Enter") {
         evt.preventDefault();
@@ -229,8 +253,32 @@ class CommentInputModal extends Modal {
   }
 
   private submit(body: string) {
-    this.onSubmit(body, this.selectedTypeTag);
-    this.close();
+    try {
+      this.onSubmit(body, this.selectedTypeTag);
+      this.submitted = true;
+      this.close();
+    } catch (error) {
+      new Notice(error instanceof Error ? error.message : "批注写入失败");
+    }
+  }
+
+  onClose() {
+    const shouldRestore =
+      !this.submitted &&
+      !this.explicitCancel &&
+      !this.restoringDraft &&
+      this.draftBody.trim().length > 0;
+    if (!shouldRestore) {
+      this.contentEl.empty();
+      return;
+    }
+
+    this.restoringDraft = true;
+    new Notice("批注草稿未保存，请先添加或取消");
+    window.setTimeout(() => {
+      this.restoringDraft = false;
+      this.open();
+    }, 0);
   }
 
   private renderTypeSelector(contentEl: HTMLElement) {
@@ -549,8 +597,21 @@ export default class ReviewCommentsPlugin extends Plugin {
         ? undefined
         : formatAddCommentTitle(typeTag, commentTypes, "单点批注");
 
+    if (this.settings.commentCreationMode === "inline") {
+      this.insertEditableComment(editor, typeTag, from, to, selection, headingContext);
+      return;
+    }
+
     new CommentInputModal(this.app, commentTypes, typeTag, (body, selectedTypeTag) => {
-      const meta = this.createCommentMeta(selectedTypeTag, body);
+      const insertOffset = headingContext
+        ? this.getLineInsertOffset(editor, headingContext.line)
+        : editor.posToOffset(from);
+      const normalizedBody = normalizeCommentBodyForContext(
+        body,
+        editor.getValue(),
+        insertOffset
+      );
+      const meta = this.createCommentMeta(selectedTypeTag, normalizedBody);
       if (headingContext) {
         meta.attrs = {
           ...meta.attrs,
@@ -575,14 +636,52 @@ export default class ReviewCommentsPlugin extends Plugin {
     }, title).open();
   }
 
-  createCommentMeta(typeTag: string, body: string): ParsedMeta {
+  private insertEditableComment(
+    editor: Editor,
+    typeTag: string,
+    from: { line: number; ch: number },
+    to: { line: number; ch: number },
+    selection: string,
+    headingContext: HeadingCommentContext | null
+  ) {
+    const meta = this.createCommentMeta(typeTag, "", "");
+    if (headingContext) {
+      meta.attrs = {
+        ...meta.attrs,
+        scope: "heading",
+        target: headingContext.target,
+      };
+      const inserted = this.insertEditablePointCommentAfterLine(
+        editor,
+        headingContext.line,
+        meta
+      );
+      this.focusEditableCommentBody(editor, inserted.startOffset, inserted.bodyStart, inserted.bodyEnd);
+      return;
+    }
+
+    const editable = formatEditableComment(
+      selection,
+      meta,
+      this.settings.writeCommentSyntax
+    );
+    const startOffset = editor.posToOffset(from);
+    editor.replaceRange(editable.markup, from, to);
+    this.focusEditableCommentBody(editor, startOffset, editable.bodyStart, editable.bodyEnd);
+  }
+
+  createCommentMeta(
+    typeTag: string,
+    body: string,
+    fallbackBody = "请填写批注"
+  ): ParsedMeta {
     const date = formatDate(new Date(), this.settings.dateFormat);
     const author = sanitizeAuthor(this.settings.authorName);
     return {
       author,
       date,
       type: typeTag,
-      body: this.escapeCommentBody(body.trim() || "请填写批注"),
+      body: this.escapeCommentBody(body.trim() || fallbackBody),
       id: generateCommentId(),
       status: "open",
       attrs: {},
@@ -617,6 +716,51 @@ export default class ReviewCommentsPlugin extends Plugin {
       line,
       ch: editor.getLine(line).length,
     });
+  }
+
+  private insertEditablePointCommentAfterLine(
+    editor: Editor,
+    line: number,
+    meta: ParsedMeta
+  ): EditableInsertion {
+    const editable = formatEditableComment(
+      "",
+      meta,
+      this.settings.writeCommentSyntax
+    );
+    const nextLine = line + 1;
+    if (nextLine < editor.lineCount()) {
+      const insertAt = { line: nextLine, ch: 0 };
+      const startOffset = editor.posToOffset(insertAt);
+      editor.replaceRange(`${editable.markup}\n`, insertAt);
+      return { startOffset, bodyStart: editable.bodyStart, bodyEnd: editable.bodyEnd };
+    }
+
+    const insertAt = { line, ch: editor.getLine(line).length };
+    const startOffset = editor.posToOffset(insertAt) + 1;
+    editor.replaceRange(`\n${editable.markup}`, insertAt);
+    return { startOffset, bodyStart: editable.bodyStart, bodyEnd: editable.bodyEnd };
+  }
+
+  private getLineInsertOffset(editor: Editor, line: number): number {
+    const nextLine = line + 1;
+    if (nextLine < editor.lineCount()) {
+      return editor.posToOffset({ line: nextLine, ch: 0 });
+    }
+    return editor.posToOffset({ line, ch: editor.getLine(line).length }) + 1;
+  }
+
+  private focusEditableCommentBody(
+    editor: Editor,
+    startOffset: number,
+    bodyStart: number,
+    bodyEnd: number
+  ) {
+    const from = editor.offsetToPos(startOffset + bodyStart);
+    const to = editor.offsetToPos(startOffset + bodyEnd);
+    editor.setSelection(from, to);
+    editor.scrollIntoView({ from, to }, true);
+    editor.focus();
   }
 
   lintCurrentFileComments(editor: Editor) {
@@ -816,58 +960,113 @@ export default class ReviewCommentsPlugin extends Plugin {
     el: HTMLElement,
     _ctx: MarkdownPostProcessorContext
   ) {
-    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null);
-    const textNodes: Text[] = [];
-    let node: Node | null;
-    while ((node = walker.nextNode())) {
-      textNodes.push(node as Text);
-    }
-
-    for (const tn of textNodes) {
-      if (tn.parentElement?.closest("pre, code")) continue;
-      const text = tn.textContent || "";
-      const comments = findComments(text, this.getParseOptions());
-      if (comments.length === 0) continue;
-
-      let lastIndex = 0;
-      const frag = document.createDocumentFragment();
-
-      for (const comment of comments) {
-        if (comment.offset > lastIndex) {
-          frag.appendChild(document.createTextNode(text.slice(lastIndex, comment.offset)));
-        }
-
-        const meta = comment.meta;
-        const span = document.createElement("span");
-        if (comment.anchor) {
-          span.className = "review-comment-highlight";
-          if (!this.settings.highlightAnchors) {
-            span.classList.add("review-comment-anchor-muted");
-          }
-          span.textContent = comment.anchor;
-        } else {
-          span.className = "review-comment-point";
-          span.textContent = "•";
-          span.setAttribute("aria-label", "单点批注");
-        }
-        span.dataset.type = meta.type;
-        this.applyTypeColor(span, meta.type);
-        span.setAttribute(
-          "title",
-          formatThreadTitle(comment.entries, (typeTag) =>
-            this.getTypeIcon(typeTag)
-          )
-        );
-        frag.appendChild(span);
-        lastIndex = comment.end;
-      }
-
-      if (lastIndex < text.length) {
-        frag.appendChild(document.createTextNode(text.slice(lastIndex)));
-      }
-      tn.parentNode?.replaceChild(frag, tn);
+    const groups = collectReadingModeTextNodeGroups(el);
+    for (const textNodes of groups) {
+      this.renderSegmentedCommentsInReadingMode(textNodes);
     }
   }
+
+  private renderSegmentedCommentsInReadingMode(textNodes: Text[]) {
+    const connectedTextNodes = textNodes.filter(
+      (node) => node.isConnected && node.parentElement
+    );
+    if (connectedTextNodes.length === 0) return;
+
+    const segments = connectedTextNodes.map((node) => node.textContent || "");
+    const source = segments.join("");
+    if (!containsCommentMarkup(source)) return;
+
+    const comments = findCommentsAcrossSegments(segments, this.getParseOptions());
+    for (const segmented of comments.reverse()) {
+      this.replaceSegmentedCommentInReadingMode(connectedTextNodes, segmented);
+    }
+  }
+
+  private replaceSegmentedCommentInReadingMode(
+    textNodes: Text[],
+    segmented: SegmentedComment
+  ) {
+    const firstSpan = segmented.spans[0];
+    const lastSpan = segmented.spans[segmented.spans.length - 1];
+    if (!firstSpan || !lastSpan) return;
+
+    const startNode = textNodes[firstSpan.segmentIndex];
+    const endNode = textNodes[lastSpan.segmentIndex];
+    if (!startNode?.isConnected || !endNode?.isConnected) return;
+
+    const range = document.createRange();
+    range.setStart(startNode, firstSpan.start);
+    range.setEnd(endNode, lastSpan.end);
+    range.deleteContents();
+    range.insertNode(this.createReadingModeCommentElement(segmented.comment));
+    range.detach();
+  }
+
+  private createReadingModeCommentElement(comment: ParsedComment): HTMLElement {
+    const meta = comment.meta;
+    const span = document.createElement("span");
+    if (comment.anchor) {
+      span.className = "review-comment-highlight";
+      if (!this.settings.highlightAnchors) {
+        span.classList.add("review-comment-anchor-muted");
+      }
+      span.textContent = comment.anchor;
+    } else {
+      span.className = "review-comment-point";
+      span.textContent = "•";
+      span.setAttribute("aria-label", "单点批注");
+    }
+    span.dataset.type = meta.type;
+    this.applyTypeColor(span, meta.type);
+    span.setAttribute(
+      "title",
+      formatThreadTitle(comment.entries, (typeTag) =>
+        this.getTypeIcon(typeTag)
+      )
+    );
+    return span;
+  }
+}
+
+function collectReadingModeTextNodeGroups(root: HTMLElement): Text[][] {
+  // Obsidian may split one raw table comment thread across several text nodes
+  // when it renders inline Markdown inside the comment body. Group by the
+  // nearest Markdown block container first; parsing per text node loses comments.
+  const textNodes: Text[] = [];
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      const parent = node.parentElement;
+      if (!parent) return NodeFilter.FILTER_REJECT;
+      if (parent.closest("pre")) return NodeFilter.FILTER_REJECT;
+      if (parent.closest(".review-comment-highlight, .review-comment-point")) {
+        return NodeFilter.FILTER_REJECT;
+      }
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+
+  let node: Node | null;
+  while ((node = walker.nextNode())) {
+    textNodes.push(node as Text);
+  }
+
+  const groups = new Map<Element, Text[]>();
+  for (const textNode of textNodes) {
+    const parent = textNode.parentElement;
+    if (!parent) continue;
+    const groupRoot =
+      parent.closest(
+        "td, th, p, li, blockquote, h1, h2, h3, h4, h5, h6, .callout, .markdown-preview-section > div"
+      ) || parent;
+    const existing = groups.get(groupRoot);
+    if (existing) {
+      existing.push(textNode);
+    } else {
+      groups.set(groupRoot, [textNode]);
+    }
+  }
+
+  return [...groups.values()];
 }
 
 function sanitizeAuthor(name: string): string {
@@ -1899,7 +2098,9 @@ class CommentsView extends ItemView {
             replaceCommentEntryMeta(value, match, entry.index, {
               ...entry.meta,
               type: typeTag,
-              body: this.plugin.escapeCommentBody(body.trim()),
+              body: this.plugin.escapeCommentBody(
+                normalizeCommentBodyForContext(body.trim(), value, match.offset)
+              ),
             })
           );
           this.cancelScheduledRender();
@@ -1931,7 +2132,9 @@ class CommentsView extends ItemView {
           author,
           date,
           type: typeTag || COMMENT_FORMAT.defaultType,
-          body: this.plugin.escapeCommentBody(body.trim() || "回复"),
+          body: this.plugin.escapeCommentBody(
+            normalizeCommentBodyForContext(body.trim() || "回复", value, match.offset)
+          ),
           id: generateCommentId(),
           status: "open",
           attrs: {},
@@ -2357,6 +2560,21 @@ class ReviewCommentsSettingTab extends PluginSettingTab {
           .onChange(async (value: string) => {
             this.plugin.settings.commentExportFormat =
               value as CommentExportFormat;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("批注方式")
+      .setDesc("弹框式使用专用输入框；编辑式会直接插入批注源码并把光标放进正文位置，适合长批注。")
+      .addDropdown((dd) =>
+        dd
+          .addOption("modal", "弹框式批注")
+          .addOption("inline", "编辑式批注")
+          .setValue(this.plugin.settings.commentCreationMode)
+          .onChange(async (value: string) => {
+            this.plugin.settings.commentCreationMode =
+              value === "inline" ? "inline" : "modal";
             await this.plugin.saveSettings();
           })
       );

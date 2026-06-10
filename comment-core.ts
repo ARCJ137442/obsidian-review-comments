@@ -95,6 +95,23 @@ export interface CommentParseOptions {
   syntaxes?: CommentSyntax[];
 }
 
+export interface EditableCommentMarkup {
+  markup: string;
+  bodyStart: number;
+  bodyEnd: number;
+}
+
+export interface CommentSegmentSpan {
+  segmentIndex: number;
+  start: number;
+  end: number;
+}
+
+export interface SegmentedComment {
+  comment: ParsedComment;
+  spans: CommentSegmentSpan[];
+}
+
 interface AnchorMatch {
   anchor: string;
   syntax: CommentSyntax;
@@ -238,6 +255,15 @@ export function formatMetaEntry(meta: ParsedMeta): string {
   return `${META_OPEN}${serializeMeta(meta)}${META_CLOSE}`;
 }
 
+export function normalizeCommentBodyForContext(
+  body: string,
+  contextText = "",
+  offset = 0
+): string {
+  if (!isLineSensitiveRange(contextText, offset, offset)) return body;
+  return body.replace(/\r\n|\r|\n/g, "<br>");
+}
+
 export function formatComment(
   anchor: string,
   meta: ParsedMeta,
@@ -247,6 +273,23 @@ export function formatComment(
   return `${delimiters.open}${anchor}${delimiters.close}${formatMetaEntry(
     meta
   )}`;
+}
+
+export function formatEditableComment(
+  anchor: string,
+  meta: ParsedMeta,
+  syntax: CommentSyntax = COMMENT_FORMAT.defaultSyntax
+): EditableCommentMarkup {
+  const emptyBodyMeta = { ...meta, body: "" };
+  const markup = formatComment(anchor, emptyBodyMeta, syntax);
+  const bodyEnd = markup.indexOf(META_CLOSE, markup.length - META_CLOSE.length);
+  if (bodyEnd === -1) {
+    throw new Error("Editable comment markup is missing its closing marker.");
+  }
+
+  const colonBeforeBody = markup.lastIndexOf(": ", bodyEnd);
+  const bodyStart = colonBeforeBody === -1 ? bodyEnd : colonBeforeBody + 2;
+  return { markup, bodyStart, bodyEnd };
 }
 
 export function findComments(
@@ -291,6 +334,47 @@ export function findComments(
   }
 
   return comments;
+}
+
+export function findCommentsAcrossSegments(
+  segments: string[],
+  options: CommentParseOptions = {}
+): SegmentedComment[] {
+  const joined = segments.join("");
+  return findComments(joined, options).map((comment) => ({
+    comment,
+    spans: mapRangeToSegmentSpans(segments, comment.offset, comment.end),
+  }));
+}
+
+function mapRangeToSegmentSpans(
+  segments: string[],
+  start: number,
+  end: number
+): CommentSegmentSpan[] {
+  const spans: CommentSegmentSpan[] = [];
+  let cursor = 0;
+
+  for (let segmentIndex = 0; segmentIndex < segments.length; segmentIndex += 1) {
+    const segment = segments[segmentIndex] || "";
+    const segmentStart = cursor;
+    const segmentEnd = cursor + segment.length;
+    const overlapStart = Math.max(start, segmentStart);
+    const overlapEnd = Math.min(end, segmentEnd);
+
+    if (overlapStart < overlapEnd) {
+      spans.push({
+        segmentIndex,
+        start: overlapStart - segmentStart,
+        end: overlapEnd - segmentStart,
+      });
+    }
+
+    cursor = segmentEnd;
+    if (cursor >= end) break;
+  }
+
+  return spans;
 }
 
 export function exportCommentsMarkdown(

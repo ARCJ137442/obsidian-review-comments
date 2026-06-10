@@ -28,6 +28,7 @@
 - 设置页可配置批注类型 registry：每种类型都有命令 id、Markdown `type` tag、显示名称、emoji 和颜色。默认通用类型 `COMMENT / 批注` 固定保留且不可删除，但可以编辑命令 id、显示名称、emoji 和颜色；新增自定义类型可以删除。
 - 标题批注会插入为标题下方的单点批注，避免批注标记进入 Obsidian 标题索引。
 - 锚定文本和批注正文都可以跨行；Live Preview 会隐藏多行批注正文元数据并保留锚定文本的多行高亮 / 下划线，侧栏会对锚定原文与批注正文做基础 Markdown 渲染。
+- 在表格、列表、引用块和 callout 这类行敏感结构中，通过弹窗或侧栏写入的多行批注正文会把物理换行规范化为 `<br>`，避免破坏 Markdown 源结构。
 
 ## 构建
 
@@ -78,6 +79,8 @@ ln -s "$(pwd)" "$VAULT/.obsidian/plugins/review-comments"
 
 悬浮工具条可以在插件设置中关闭，不影响右键菜单、命令面板或快捷键。
 
+设置页的 `批注方式` 可以在 `弹框式批注` 与 `编辑式批注` 之间切换。弹框式会在专用输入框中输入批注，并在行敏感结构中自动保护多行正文；编辑式会直接把批注源码插入 Markdown，并把光标放到正文位置，适合需要完全控制源文本的长批注。
+
 设置页还提供 `新建批注使用格式` 和 `兼容读取格式`：默认写入 `{...}{>>...<<}` plain-anchor，同时兼容读取 `{<<...>>}{>>...<<}`、`{==...==}{>>...<<}` 与 `{=#...#=}{>>...<<}`。当前写入格式会自动保持在兼容读取集合中，避免新建批注写出后立刻不可读。
 
 设置页的 `批注类型` 区域可以新增类型，或调整现有类型的命令 id、显示名称、emoji 与颜色。默认 `COMMENT / 批注` 是通用类型，默认颜色为 `#e6be28`；它的 Markdown `type=COMMENT` tag 固定保留且不能删除，用来给缺省类型、普通批注和回复提供稳定落点。
@@ -122,8 +125,11 @@ npm test      # parser and source-editing regression tests
 
 CodeMirror 模式同步也必须延迟调度：不要在 `ViewPlugin` 构造函数或 `update` 回调里直接 `view.dispatch(...)`，否则会触发 `Calls to EditorView.update are not allowed while an update is in progress`。当前实现通过零延迟任务合并模式切换，避免在 Obsidian 正在刷新编辑器时重入 dispatch。
 
+阅读模式中的表格批注不能按单个 DOM text node 解析。Obsidian 渲染行内代码、强调等 Markdown 时会把一个 `{anchor}{>>...<<}` 批注线程拆成多个 text node；当前实现先按表格单元格、段落、列表项、引用块、callout 等容器分组，再拼接片段解析并用 DOM Range 一次性替换完整线程。后续不要退回逐 text node 替换，否则会重现“表格里 7 个批注只有部分可见”的问题。
+
 ## 变更记录
 
+- 2026-06-11：修复阅读模式 / Live Preview 中表格批注被 Obsidian 拆分成多个 DOM text node 后无法完整识别的问题，覆盖 `local/reply.local.md` 同形态的 7 个表格批注样本；新增 `批注方式` 设置，可在弹框式批注与编辑式批注之间切换；弹框式和侧栏编辑 / 回复在表格、列表、引用块、callout 中会把多行批注正文规范化为 `<br>`，避免破坏 Markdown 源结构；弹窗关闭时会保护未提交草稿，避免误点遮罩丢失正文。验证：`npm test` 73/73 PASS，`npm run build` PASS。
 - 2026-06-10：完成 M5 类型 registry 收尾，并修复侧栏筛选与编辑器模式同步细节。设置页支持自定义批注类型的命令 id、metadata tag、显示名称、emoji 与颜色；默认 `COMMENT / 批注` 固定保留、不可删除，但可编辑 id / 名称 / emoji / 颜色，默认色为 `#e6be28`。命令面板、右键菜单、悬浮工具条、回复 / 编辑弹窗、正文装饰、侧栏卡片、线程条目和状态 / 类型标签筛选都改为读取 registry；侧栏移除重复静态计数行，改用更轻的凹陷 pill 筛选标签；CodeMirror 模式同步改为延迟 dispatch，避免打开带批注文件时重入更新。验证：`npm test` 67/67 PASS，`npx tsc --noEmit` PASS，`npm run build` PASS。
 - 2026-06-09：新增 `极简版` 批注清单导出格式，只输出被批注文本与连续批注 / 回复正文；默认通用类型 `COMMENT / 批注` 的高亮、下划线、卡片边线改回黄色，增强默认批注识别度。验证：`npm test` 55/55 PASS，`npx tsc --noEmit` PASS。
 - 2026-06-09：完成 M4/M5 第一轮。设置页新增 `新建批注使用格式` 与 `兼容读取格式`，解析器可按配置兼容 `{...}`、`{<<...>>}`、`{==...==}`、`{=#...#=}`，新建范围批注、单点批注与回复按当前使用格式写入；新增默认通用类型 `COMMENT / 批注`，新批注与回复默认使用该类型，颜色为浅灰 `#dddddd`，旧显式 `NOTE` 继续原样读取。验证：`npm test` 52/52 PASS，`npx tsc --noEmit` PASS，`npm run build` PASS。

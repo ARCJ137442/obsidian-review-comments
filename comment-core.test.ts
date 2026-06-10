@@ -5,7 +5,10 @@ import {
   exportCommentsMarkdown,
   filterComments,
   findComments,
+  findCommentsAcrossSegments,
   formatComment,
+  formatEditableComment,
+  normalizeCommentBodyForContext,
   parseMeta,
   lintComments,
   normalizeCommentSyntaxes,
@@ -308,6 +311,32 @@ describe("comment-core parsing", () => {
     expect(comments[0].entries).toHaveLength(2);
   });
 
+  it("parses every known table comment from the ExoNet reply.local fixture shape", () => {
+    const source = [
+      "| 层级 | 概念 | 批注 |",
+      "| - | - | - |",
+      "| 1 | {对象 A}{>>author=Argon;date=2026-06-10;type=COMMENT;id=RC-20260610-030139-IO2F: 正常<<} | x |",
+      "| 2 | {对象 B}{>>author=Argon;date=2026-06-10;type=COMMENT;id=RC-20260610-223332-DQIW: 第一行<br>第二行<<} | x |",
+      "| 3 | {对象 C}{>>author=Argon;date=2026-06-10;type=COMMENT;id=RC-20260610-223554-V4FZ: 第一行<br>- 第二行<<} | x |",
+      "| 4 | {对象 D}{>>author=Argon;date=2026-06-10;type=COMMENT;id=RC-20260610-224436-LXGG: 第一行<br>> 第二行<<} | x |",
+      "| 5 | {对象 E}{>>author=Argon;date=2026-06-10;type=COMMENT;id=RC-20260610-224754-DJAT: 正常<<} | x |",
+      "| 6 | {对象 F}{>>author=Argon;date=2026-06-10;type=COMMENT;id=RC-20260610-231202-K0MD: 正常<<} | x |",
+      "| 7 | {对象 G}{>>author=Argon;date=2026-06-10;type=COMMENT;id=RC-20260610-231406-QKA2: 第一行<br>第二行<br>第三行<<} | x |",
+    ].join("\n");
+
+    const comments = findComments(source);
+
+    expect(comments.map((comment) => comment.meta.id)).toEqual([
+      "RC-20260610-030139-IO2F",
+      "RC-20260610-223332-DQIW",
+      "RC-20260610-223554-V4FZ",
+      "RC-20260610-224436-LXGG",
+      "RC-20260610-224754-DJAT",
+      "RC-20260610-231202-K0MD",
+      "RC-20260610-231406-QKA2",
+    ]);
+  });
+
   it("parses multiline comments inside Markdown lists", () => {
     const source = [
       "- 前置事项",
@@ -380,6 +409,111 @@ describe("comment-core metadata", () => {
 
     expect(parsed.type).toBe("NOTE");
     expect(parsed.body).toBe("老备注");
+  });
+});
+
+describe("comment-core formatting helpers", () => {
+  it("returns cursor offsets for editing the body of a newly inserted comment", () => {
+    const editable = formatEditableComment("123", {
+      author: "Argon",
+      date: "2026-06-10",
+      type: "COMMENT",
+      body: "",
+      id: "RC-EDIT",
+      status: "open",
+      attrs: {},
+    });
+
+    expect(editable.markup).toBe(
+      "{123}{>>author=Argon;date=2026-06-10;type=COMMENT;id=RC-EDIT: <<}"
+    );
+    expect(editable.markup.slice(editable.bodyStart, editable.bodyEnd)).toBe("");
+    expect(editable.markup.slice(0, editable.bodyStart).endsWith(": ")).toBe(true);
+    expect(editable.markup.slice(editable.bodyEnd)).toBe("<<}");
+  });
+
+  it("keeps multiline bodies in normal paragraphs but flattens them in line-sensitive Markdown", () => {
+    expect(
+      normalizeCommentBodyForContext("第一行\n第二行", "普通段落", 0)
+    ).toBe("第一行\n第二行");
+    expect(
+      normalizeCommentBodyForContext("第一行\n第二行", "| A | B |", 2)
+    ).toBe("第一行<br>第二行");
+    expect(
+      normalizeCommentBodyForContext("第一行\r\n第二行", "- list item", 2)
+    ).toBe("第一行<br>第二行");
+    expect(
+      normalizeCommentBodyForContext("第一行\r第二行", "> quote", 2)
+    ).toBe("第一行<br>第二行");
+  });
+});
+
+describe("comment-core segmented parsing helpers", () => {
+  it("maps a comment split by rendered inline Markdown nodes back to one thread", () => {
+    const segments = [
+      "{内容被压入、再被取出的共享载体；带投递语义（FIFO/广播/有损）}",
+      "{>>author=Argon;date=2026-06-10;type=COMMENT;id=RC-20260610-223554-V4FZ: 这个介质可以是共享的",
+      "Arc<Mutex>",
+      "或者共享的文件、或者持有的网络socket。它大概会在理论上单独定义，在实现上隐藏在各「传输方式」的属性里，因为所有权上经常是「介质的一部分被传输方式对象自身持有」而被并入",
+      "&mut Self",
+      "。我会觉得它是一个比较好的收束方向，不过后续需要跟之前的方法一样做一个AB实验验证。<<}",
+    ];
+
+    const [thread] = findCommentsAcrossSegments(segments);
+
+    expect(thread.comment.anchor).toBe(
+      "内容被压入、再被取出的共享载体；带投递语义（FIFO/广播/有损）"
+    );
+    expect(thread.comment.meta.id).toBe("RC-20260610-223554-V4FZ");
+    expect(thread.comment.meta.body).toContain("Arc<Mutex>");
+    expect(thread.comment.meta.body).toContain("&mut Self");
+    expect(thread.spans).toEqual([
+      { segmentIndex: 0, start: 0, end: segments[0].length },
+      { segmentIndex: 1, start: 0, end: segments[1].length },
+      { segmentIndex: 2, start: 0, end: segments[2].length },
+      { segmentIndex: 3, start: 0, end: segments[3].length },
+      { segmentIndex: 4, start: 0, end: segments[4].length },
+      { segmentIndex: 5, start: 0, end: segments[5].length },
+    ]);
+  });
+
+  it("maps multiple split comments in one rendered group without merging them", () => {
+    const segments = [
+      "{第一对象}",
+      "{>>author=Argon;date=2026-06-10;type=COMMENT;id=RC-FIRST: 包含 ",
+      "Arc<Mutex>",
+      " 的批注<<} 中间文本 {第二对象}{>>author=Argon;date=2026-06-10;type=ASK;id=RC-SECOND: 包含 ",
+      "&mut Self",
+      " 的批注<<}",
+    ];
+
+    const comments = findCommentsAcrossSegments(segments);
+
+    expect(comments).toHaveLength(2);
+    expect(comments.map((thread) => thread.comment.meta.id)).toEqual([
+      "RC-FIRST",
+      "RC-SECOND",
+    ]);
+    expect(comments[0].comment.anchor).toBe("第一对象");
+    expect(comments[0].comment.meta.body).toContain("Arc<Mutex>");
+    expect(comments[1].comment.anchor).toBe("第二对象");
+    expect(comments[1].comment.meta.body).toContain("&mut Self");
+    expect(comments[0].spans[0]).toEqual({
+      segmentIndex: 0,
+      start: 0,
+      end: segments[0].length,
+    });
+    expect(comments[1].spans.at(-1)).toEqual({
+      segmentIndex: 5,
+      start: 0,
+      end: segments[5].length,
+    });
+  });
+
+  it("keeps bare point markers unclassified until a metadata block follows", () => {
+    const comments = findCommentsAcrossSegments(["{}", "{}{}{}"]);
+
+    expect(comments).toHaveLength(0);
   });
 });
 

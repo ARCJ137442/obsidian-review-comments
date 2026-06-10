@@ -27,6 +27,7 @@ Point comment: {}{>>author=shirai;date=2026-05-13;type=COMMENT;id=RC-20260513-12
 - The settings tab separates `新建批注使用格式` from `兼容读取格式`: the first controls the syntax used for newly written comments, while the second controls which historical formats are parsed, folded, rendered, listed, and linted.
 - Heading comments are inserted as point comments below the heading so the comment markup does not become part of Obsidian's heading index.
 - Anchors and comment bodies may span multiple lines. The sidebar renders basic Markdown for both the anchored text and the comment body.
+- In line-sensitive structures such as tables, lists, blockquotes, and callouts, multiline comment bodies created through the modal or side panel are normalized to `<br>` so the raw Markdown structure stays intact.
 
 ## Build
 
@@ -77,6 +78,8 @@ Alternatively:
 
 The floating toolbar can be disabled in plugin settings without affecting the right-click menu, commands, or hotkeys.
 
+The `批注方式` setting switches between `弹框式批注` and `编辑式批注`. Modal creation uses a dedicated input box and protects multiline bodies in line-sensitive Markdown; inline creation inserts the raw comment markup directly into the Markdown file and places the cursor inside the body slot for source-level editing.
+
 The settings tab also includes `新建批注使用格式` and `兼容读取格式`. By default the plugin writes `{...}{>>...<<}` plain-anchor comments while remaining read-compatible with `{<<...>>}{>>...<<}`, `{==...==}{>>...<<}`, and `{=#...#=}{>>...<<}`. The active write syntax is always kept in the compatible read set.
 
 `检查当前文件批注` scans the current Markdown file for protocol issues and reports errors, warnings, and informational hints in a Notice plus modal. It currently covers duplicate `id`, legacy `replyTo`, orphan `{>>` / `<<}` markers, suspected comments inside fenced code blocks, bare `{}` / `{}{}{}` edge cases, range comments embedded in headings, multiline comments in line-sensitive Markdown structures, legacy pipe metadata inside tables, and minimal drafts without `id`.
@@ -114,8 +117,15 @@ npm run build # production build
 npm test      # parser and source-editing regression tests
 ```
 
+Implementation notes:
+
+- Cross-line `{>>...<<}` comment bodies must be folded through `StateField` decorations provided directly to CodeMirror. Do not move cross-line `Decoration.replace` back into a `ViewPlugin`; Obsidian / CodeMirror rejects plugin-provided decorations that replace line breaks.
+- CodeMirror mode synchronization must be deferred. Do not call `view.dispatch(...)` inside a `ViewPlugin` constructor or `update` callback, or Obsidian can throw `Calls to EditorView.update are not allowed while an update is in progress`.
+- Reading-mode table comments must not be parsed per DOM text node. Obsidian splits one raw comment thread across multiple text nodes when inline Markdown such as code spans is rendered; group text nodes by table cell / paragraph / list item / blockquote / callout container, parse the joined text, then replace the full DOM range.
+
 ## Changelog
 
+- 2026-06-11: Fixed reading-mode / Live Preview table comments when Obsidian splits one raw comment thread across multiple DOM text nodes; regression coverage now includes seven table comment samples shaped after `local/reply.local.md`. Added the `批注方式` setting for modal vs inline source-level comment creation. Modal creation plus side-panel edit/reply now normalize multiline comment bodies to `<br>` inside tables, lists, blockquotes, and callouts so raw Markdown structure is not broken. The input modal also protects non-empty drafts when dismissed by accident. Validation: `npm test` 73/73 PASS, `npm run build` PASS.
 - 2026-06-09: Added the `极简版` export format, which only outputs anchored text plus continuous comment/reply bodies. Restored the generic default `COMMENT / 批注` highlight, underline, and card accent to yellow for stronger default visibility. Validation: `npm test` 55/55 PASS, `npx tsc --noEmit` PASS.
 - 2026-06-09: Completed the first M4/M5 pass. Settings now separate `新建批注使用格式` from `兼容读取格式`; parser calls can be limited to configured syntaxes, and new range comments, point comments, and replies use the selected write syntax. Added the generic default `COMMENT / 批注` type with light gray `#dddddd`; new comments and replies default to it, while explicit legacy `NOTE` metadata remains preserved. Validation: `npm test` 52/52 PASS, `npx tsc --noEmit` PASS, `npm run build` PASS.
 - 2026-06-09: Added `复制当前文件批注清单` and the side-panel `复制清单` button. Supports simple and full Markdown export formats for review, debate, and audit workflows. Validation: `npm test` 47/47 PASS, `npx tsc --noEmit` PASS, `npm run build` PASS, deployed only `main.js`, `manifest.json`, and `styles.css` to the test vault without overwriting `data.json`.
