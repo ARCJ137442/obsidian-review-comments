@@ -87,6 +87,10 @@ function renderSegmentedCommentsInReadingMode(
   const comments = findCommentsAcrossSegments(segments, options.parseOptions);
   const ownerDocument = getOwnerDocument(renderableTextNodes[0]);
   for (const segmented of comments.reverse()) {
+    if (isSegmentedCommentFullyInsideCodeLike(renderableTextNodes, segmented.spans)) {
+      continue;
+    }
+
     if (
       replaceSegmentedCommentInReadingMode(
         renderableTextNodes,
@@ -126,6 +130,17 @@ function replaceSegmentedCommentInReadingMode(
   } catch {
     return false;
   }
+}
+
+function isSegmentedCommentFullyInsideCodeLike(
+  textNodes: Text[],
+  spans: { segmentIndex: number; start: number; end: number }[]
+): boolean {
+  if (spans.length === 0) return false;
+  return spans.every((span) => {
+    const textNode = textNodes[span.segmentIndex];
+    return Boolean(textNode?.parentElement?.closest("code, pre"));
+  });
 }
 
 function getOwnerDocument(node: Node): Document {

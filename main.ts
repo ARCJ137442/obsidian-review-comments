@@ -67,12 +67,22 @@ import {
   sanitizeCommentTypeLabel,
   sanitizeCommentTypeTag,
 } from "./comment-types";
+import {
+  COMMENT_THREAD_DATA_ATTR,
+  CommentAutoFocusMode,
+  CommentAutoFocusTrigger,
+  getCommentThreadKeyFromTarget,
+  normalizeCommentAutoFocusMode,
+  resolveAutoFocusCommentThreadKey,
+  shouldAutoFocusCommentThread,
+} from "./comment-autofocus";
 import { renderCommentMarkupInReadingMode } from "./reading-mode-renderer";
 
 interface ReviewCommentsSettings {
   authorName: string;
   dateFormat: "iso" | "japanese";
   commentCreationMode: "modal" | "inline";
+  commentAutoFocus: CommentAutoFocusMode;
   autoOpenPanel: boolean;
   showFloatingBar: boolean;
   foldEditorMarkup: boolean;
@@ -87,6 +97,7 @@ const DEFAULT_SETTINGS: ReviewCommentsSettings = {
   authorName: "you",
   dateFormat: "iso",
   commentCreationMode: "modal",
+  commentAutoFocus: "off",
   autoOpenPanel: true,
   showFloatingBar: true,
   foldEditorMarkup: true,
@@ -113,11 +124,15 @@ function normalizeSettings(
     : DEFAULT_SETTINGS.writeCommentSyntax;
   const commentCreationMode =
     loaded.commentCreationMode === "inline" ? "inline" : "modal";
+  const commentAutoFocus = normalizeCommentAutoFocusMode(
+    loaded.commentAutoFocus
+  );
 
   return {
     ...DEFAULT_SETTINGS,
     ...loaded,
     commentCreationMode,
+    commentAutoFocus,
     writeCommentSyntax,
     compatibleCommentSyntaxes: normalizeCommentSyntaxes(
       loaded.compatibleCommentSyntaxes,
@@ -471,6 +486,12 @@ export default class ReviewCommentsPlugin extends Plugin {
     this.registerMarkdownPostProcessor((el, ctx) =>
       this.renderCommentsInReadingMode(el, ctx)
     );
+    this.registerDomEvent(document, "click", (event: MouseEvent) => {
+      void this.maybeAutoFocusCommentThread(event, "left");
+    });
+    this.registerDomEvent(document, "contextmenu", (event: MouseEvent) => {
+      void this.maybeAutoFocusCommentThread(event, "right");
+    });
 
     this.setupFloatingBar();
     this.addSettingTab(new ReviewCommentsSettingTab(this.app, this));
@@ -825,6 +846,59 @@ export default class ReviewCommentsPlugin extends Plugin {
     await commentsView.revealThread(match);
   }
 
+  private async maybeAutoFocusCommentThread(
+    event: MouseEvent,
+    trigger: CommentAutoFocusTrigger
+  ) {
+    if (
+      !shouldAutoFocusCommentThread(this.settings.commentAutoFocus, trigger)
+    ) {
+      return;
+    }
+
+    // Auto focus must follow the actual DOM event target. Using the editor
+    // cursor here causes right-click races in split panes and after stale selections.
+    const threadKey = resolveAutoFocusCommentThreadKey(
+      this.settings.commentAutoFocus,
+      trigger,
+      event.target
+    );
+    if (!threadKey) return;
+
+    const mdView = this.getMarkdownViewForTarget(event.target);
+    if (!mdView) return;
+
+    await this.revealCommentThreadByKey(threadKey, mdView);
+  }
+
+  private getMarkdownViewForTarget(
+    target: EventTarget | null
+  ): MarkdownView | null {
+    if (!(target instanceof Node)) return null;
+    for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
+      if (leaf.view instanceof MarkdownView && leaf.view.containerEl.contains(target)) {
+        return leaf.view;
+      }
+    }
+    return null;
+  }
+
+  private async revealCommentThreadByKey(
+    threadKey: string,
+    mdView: MarkdownView
+  ) {
+    const fileText = mdView.editor.getValue();
+    const match = findComments(fileText, this.getParseOptions()).find(
+      (comment) => getCommentThreadKey(comment) === threadKey
+    );
+    if (!match) return;
+
+    const commentsView = await this.activateView();
+    if (!commentsView) return;
+    commentsView.lastMarkdownView = mdView;
+    await commentsView.revealThread(match);
+  }
+
   async activateView(): Promise<CommentsView | null> {
     const { workspace } = this.app;
     const existing = workspace.getLeavesOfType(VIEW_TYPE_COMMENTS);
@@ -984,6 +1058,7 @@ export default class ReviewCommentsPlugin extends Plugin {
       span.setAttribute("aria-label", "单点批注");
     }
     span.dataset.type = meta.type;
+    span.dataset[COMMENT_THREAD_DATA_ATTR] = getCommentThreadKey(comment);
     this.applyTypeColor(span, meta.type);
     span.setAttribute(
       "title",
@@ -1072,7 +1147,8 @@ class CommentPointWidget extends WidgetType {
   constructor(
     private readonly title: string,
     private readonly type: string,
-    private readonly colorTriplet: string
+    private readonly colorTriplet: string,
+    private readonly threadKey: string
   ) {
     super();
   }
@@ -1081,7 +1157,8 @@ class CommentPointWidget extends WidgetType {
     return (
       this.title === other.title &&
       this.type === other.type &&
-      this.colorTriplet === other.colorTriplet
+      this.colorTriplet === other.colorTriplet &&
+      this.threadKey === other.threadKey
     );
   }
 
@@ -1089,6 +1166,7 @@ class CommentPointWidget extends WidgetType {
     const span = document.createElement("span");
     span.className = "review-comment-point-live";
     span.dataset.type = this.type;
+    span.dataset[COMMENT_THREAD_DATA_ATTR] = this.threadKey;
     span.style.setProperty("--review-comment-type-color", this.colorTriplet);
     span.textContent = "•";
     span.title = this.title;
@@ -1306,6 +1384,7 @@ function buildCommentDecorationsFromComments(
     const meta = comment.meta;
     const title = formatThreadTitle(comment.entries, getTypeIcon);
     const colorTriplet = getTypeColorTriplet(meta.type);
+    const threadKey = getCommentThreadKey(comment);
     const expanded = !foldMarkup || selectionTouchesComment(state, start, end);
 
     if (!comment.anchor) {
@@ -1318,7 +1397,12 @@ function buildCommentDecorationsFromComments(
         );
       } else {
         addReplace(ranges, start, end, {
-          widget: new CommentPointWidget(title, meta.type, colorTriplet),
+          widget: new CommentPointWidget(
+            title,
+            meta.type,
+            colorTriplet,
+            threadKey
+          ),
         });
       }
       continue;
@@ -1336,6 +1420,7 @@ function buildCommentDecorationsFromComments(
         attributes: {
           title,
           "data-type": meta.type,
+          "data-review-thread-key": threadKey,
           style: `--review-comment-type-color: ${colorTriplet}`,
         },
       }).range(highlightTextStart, highlightTextEnd)
@@ -2501,6 +2586,22 @@ class ReviewCommentsSettingTab extends PluginSettingTab {
           .onChange(async (value: string) => {
             this.plugin.settings.commentCreationMode =
               value === "inline" ? "inline" : "modal";
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("批注自动聚焦")
+      .setDesc("点击或右键编辑器 / 阅读态里的批注时，自动把右侧批注面板滚动到对应线程。")
+      .addDropdown((dd) =>
+        dd
+          .addOption("off", "不开启")
+          .addOption("left", "左键")
+          .addOption("right", "右键")
+          .setValue(this.plugin.settings.commentAutoFocus)
+          .onChange(async (value: string) => {
+            this.plugin.settings.commentAutoFocus =
+              normalizeCommentAutoFocusMode(value);
             await this.plugin.saveSettings();
           })
       );

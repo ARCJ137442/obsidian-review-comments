@@ -92,6 +92,29 @@ describe("reading mode renderer", () => {
     expect(cell.textContent).not.toContain("<<}");
   });
 
+  it("does not render a complete pseudo-comment inside inline code", () => {
+    const cell = createDetachedTableCell();
+    appendText(cell, "代码 ");
+    appendInline(cell, "code", "{not-comment}{>>body<<}");
+    appendText(
+      cell,
+      " 正文 {real}{>>author=Argon;date=2026-06-11;type=COMMENT;id=RC-TABLE-4: 真实批注<<}"
+    );
+
+    const rendered = renderCommentMarkupInReadingMode(cell, {
+      createCommentElement,
+    });
+
+    expect(rendered).toBe(1);
+    expect(cell.querySelectorAll(".review-comment-highlight")).toHaveLength(1);
+    expect(cell.querySelector(".review-comment-highlight")?.textContent).toBe(
+      "real"
+    );
+    expect(cell.querySelector("code")?.textContent).toBe(
+      "{not-comment}{>>body<<}"
+    );
+  });
+
   it("groups split text by each table-cell wrapper", () => {
     const win = new Window();
     const root = win.document.createElement("div");
