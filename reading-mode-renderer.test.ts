@@ -23,6 +23,10 @@ function appendInline(parent: Element, tagName: string, text: string) {
   parent.appendChild(el);
 }
 
+function appendBreak(parent: Element) {
+  parent.appendChild(parent.ownerDocument.createElement("br"));
+}
+
 function createCommentElement(
   comment: ParsedComment,
   ownerDocument: Document
@@ -131,5 +135,125 @@ describe("reading mode renderer", () => {
     expect(groups).toHaveLength(2);
     expect(groups.map((group) => group.map((node) => node.textContent).join("")))
       .toEqual(["{a}{>>one<<}", "{b}{>>two<<}"]);
+  });
+
+  it("renders every known reply.local table comment when preview DOM splits metadata across inline nodes", () => {
+    const win = new Window();
+    const root = win.document.createElement("div");
+
+    const cases: Array<{
+      id: string;
+      anchorText: string;
+      build: (cell: HTMLElement) => void;
+    }> = [
+      {
+        id: "RC-20260610-030139-IO2F",
+        anchorText: "被搬运的比特串",
+        build(cell) {
+          appendText(
+            cell,
+            "{被搬运的比特串}{>>author=Argon;date=2026-06-10;type=COMMENT;id=RC-20260610-030139-IO2F: 正常<<}"
+          );
+        },
+      },
+      {
+        id: "RC-20260610-223332-DQIW",
+        anchorText: "可空/有限/无界（size hint=Option<usize>，读作\"长度上界\"）",
+        build(cell) {
+          appendText(cell, "{可空/有限/无界（size hint=");
+          appendInline(cell, "code", "Option<usize>");
+          appendText(cell, "，读作\"长度上界\"）}{>>author=Argon;date=2026-06-10;type=COMMENT;id=RC-20260610-223332-DQIW: 第一行");
+          appendBreak(cell);
+          appendText(cell, "第二行<<}");
+        },
+      },
+      {
+        id: "RC-20260610-223554-V4FZ",
+        anchorText: "内容被压入、再被取出的共享载体；带投递语义（FIFO/广播/有损）",
+        build(cell) {
+          appendText(
+            cell,
+            "{内容被压入、再被取出的共享载体；带投递语义（FIFO/广播/有损）}{>>author=Argon;date=2026-06-10;type=COMMENT;id=RC-20260610-223554-V4FZ: 这个介质可以是共享的"
+          );
+          appendInline(cell, "code", "Arc<Mutex>");
+          appendText(cell, " 或者 ");
+          appendInline(cell, "code", "&mut Self");
+          appendText(cell, "<<}");
+        },
+      },
+      {
+        id: "RC-20260610-224436-LXGG",
+        anchorText:
+          "send@发端 取一块内容 C 压入介质；recv@收端 取出 C 加进数据。地基",
+        build(cell) {
+          appendText(
+            cell,
+            "{send@发端 取一块内容 C 压入介质；recv@收端 取出 C 加进数据。"
+          );
+          appendInline(cell, "strong", "地基");
+          appendText(cell, "}{>>author=Argon;date=2026-06-10;type=COMMENT;id=RC-20260610-224436-LXGG: 第一行");
+          appendBreak(cell);
+          appendText(cell, "> 第二行<<}");
+        },
+      },
+      {
+        id: "RC-20260610-224754-DJAT",
+        anchorText: "反复生成传输过程的那个 send/recv 本身",
+        build(cell) {
+          appendText(
+            cell,
+            "{反复生成传输过程的那个 send/recv 本身}{>>author=Argon;date=2026-06-10;type=COMMENT;id=RC-20260610-224754-DJAT: 正常<<}"
+          );
+        },
+      },
+      {
+        id: "RC-20260610-231202-K0MD",
+        anchorText: "方式→方式 的映射",
+        build(cell) {
+          appendText(
+            cell,
+            "{方式→方式 的映射}{>>author=Argon;date=2026-06-10;type=COMMENT;id=RC-20260610-231202-K0MD: 正常<<}"
+          );
+        },
+      },
+      {
+        id: "RC-20260610-231406-QKA2",
+        anchorText: "又一个 trait object",
+        build(cell) {
+          appendText(
+            cell,
+            "{又一个 trait object}{>>author=Argon;date=2026-06-10;type=COMMENT;id=RC-20260610-231406-QKA2: 第一行"
+          );
+          appendBreak(cell);
+          appendText(cell, "第二行");
+          appendBreak(cell);
+          appendText(cell, "第三行<<}");
+        },
+      },
+    ];
+
+    for (const testCase of cases) {
+      const cell = win.document.createElement("div");
+      cell.className = "table-cell-wrapper";
+      testCase.build(cell);
+      root.appendChild(cell);
+    }
+
+    const rendered = renderCommentMarkupInReadingMode(root, {
+      createCommentElement,
+    });
+
+    expect(rendered).toBe(cases.length);
+
+    const highlights = [...root.querySelectorAll(".review-comment-highlight")];
+    expect(highlights).toHaveLength(cases.length);
+    expect(highlights.map((el) => el.textContent)).toEqual(
+      cases.map((testCase) => testCase.anchorText)
+    );
+
+    for (const cell of root.querySelectorAll(".table-cell-wrapper")) {
+      expect(cell.textContent).not.toContain("{>>");
+      expect(cell.textContent).not.toContain("<<}");
+    }
   });
 });
